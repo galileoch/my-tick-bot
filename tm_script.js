@@ -1,9 +1,10 @@
 // ==UserScript==
-// @name         Cityline Auto Click Buy Ticket
+// @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  每100ms檢查 buyTicketBtn，出現即自動點擊
+// @version      1.1
+// @description  快速自動點擊 buyTicketBtn，並在第二頁自動點擊「繼續」按鈕
 // @match        https://shows.cityline.com.hk/*
+// @match        https://venue.cityline.com.hk/*
 // @grant        none
 // @run-at       document-end
 // ==/UserScript==
@@ -11,12 +12,33 @@
 (function () {
   'use strict';
 
+  const CLICK_INTERVAL_MS = 50;
+
+  const selectors = [
+    {
+      name: 'buyTicketBtn',
+      query: '#buyTicketBtn',
+    },
+    {
+      name: 'continuePurchaseBtn',
+      query: 'button.purchase-btn.required[data-label-group="button.purchase.title"][data-i18n="button.purchase.title"]',
+      text: '繼續',
+    },
+  ];
+
   const timer = setInterval(() => {
-    const btn = document.querySelector('#buyTicketBtn');
-    if (btn) {
+    for (const selector of selectors) {
+      const btn = document.querySelector(selector.query);
+      if (!btn) continue;
+
+      if (selector.text && btn.textContent?.trim() !== selector.text) {
+        continue;
+      }
+
       btn.click();
       clearInterval(timer);
-      console.log('[TM] buyTicketBtn found and clicked.');
+      console.log(`[TM] ${selector.name} found and clicked.`);
+      return;
     }
-  }, 100);
+  }, CLICK_INTERVAL_MS);
 })();
