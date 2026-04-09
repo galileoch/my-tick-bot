@@ -4,8 +4,11 @@
 // @version      0.1
 // @description  Auto click available seats for NOL World
 // @author       You
-// @match        https://tickets.interpark.com/onestop/seat
+// @match        https://tickets.interpark.com/onestop/*
+// @match        https://tickets.interpark.com/*
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=interpark.com
 // @grant        none
+// @run-at       document-end
 // ==/UserScript==
 
 (function () {
