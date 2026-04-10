@@ -387,7 +387,7 @@
             }
 
             // 定義 Block 優先次序
-            const priorityList = [1, 2, 13, 14, 15, 12, 11, 16, 10, 17, 9, 18, 31, 32, 33, 30, 29, 34, 28, 35, 36, 27];
+            const priorityList = [1, 2, 13, 14, 15, 12, 11, 16, 10, 17, 9, 18, 31, 32, 33, 30];
 
             // 搵出所有大於 1 個吉位嘅 block ID
             let multiSeatGroupIds = Object.keys(groupCounts).filter(gId => groupCounts[gId] > 1);
@@ -407,10 +407,7 @@
                     }
                 }
 
-                // 如果 priorityList 入面冇中，就隨便揀第一個
-                if (!targetGroupId) {
-                    targetGroupId = multiSeatGroupIds[0];
-                }
+                // 如果 priorityList 入面冇中，不處理（非優先區一律跳過）
             }
 
             if (targetGroupId) {
@@ -517,7 +514,33 @@
             return;
         }
 
-        // 判斷連位：必須同一區 + (同排且連號/隔一號，或同號且連排)
+        // === Row 篩選規則 ===
+        const specialBlocks = new Set([1, 2, 11, 12, 13, 14, 15, 16, 31, 32, 30, 33, 9, 10, 17, 18]);
+        const blockNum = seats[0].block !== 'unknown' ? parseInt(seats[0].block, 10) : NaN;
+
+        // 非 Special Block → 只接受第 1-3 排
+        if (!specialBlocks.has(blockNum)) {
+            const allowedRows = new Set([1, 2, 3]);
+            const badRows = seats.filter(s => !allowedRows.has(s.row));
+            if (badRows.length === seats.length) {
+                console.warn(`[NOL Bot] Block ${blockNum} 非特選區且無第 1-3 排座位，全部刪除並重試...`);
+                triggerRemoveAll();
+                return;
+            }
+            badRows.forEach(s => {
+                console.log(`[NOL Bot] Block ${blockNum} 非特選區，移除非第 1-3 排座位: ${s.text}`);
+                if (s.removeBtn) s.removeBtn.click();
+            });
+            seats = seats.filter(s => allowedRows.has(s.row));
+            if (seats.length <= 1) {
+                console.warn(`[NOL Bot] Block ${blockNum} 第 1-3 排位不足 2 個，全部刪除並重試...`);
+                triggerRemoveAll();
+                return;
+            }
+        }
+        // Rule 2: Special Block → 有連位就得，唔洗理排數
+
+        // 判斷連位：必須同一區 + (同排且連號，或同號且連排)
         for (let i = 0; i < seats.length; i++) {
             for (let j = i + 1; j < seats.length; j++) {
                 let s1 = seats[i];
@@ -527,9 +550,8 @@
 
                 let isRowConsecutive = s1.num === s2.num && Math.abs(s1.row - s2.row) === 1;
 
-                // 放寬橫向連位條件：間隔係 1 (連號) 或 2 (隔一個號)
                 let numDiff = Math.abs(s1.num - s2.num);
-                let isNumConsecutive = s1.row === s2.row && (numDiff === 1 || numDiff === 2 || numDiff === 3);
+                let isNumConsecutive = s1.row === s2.row && numDiff === 1;
 
                 if (isRowConsecutive || isNumConsecutive) {
                     s1.keep = true;
@@ -585,9 +607,6 @@
                 console.log(`[NOL Bot] 搵到「完成選擇」按鈕，執行點擊！`);
                 finishBtn.click();
 
-                // 成功點擊後立即執行自動截圖
-                autoCapture();
-
                 // 點擊完成選擇後，觸發聲音同桌面通知
                 const nowMs = Date.now();
                 if (nowMs - lastAlertTime > 3000) {
@@ -607,6 +626,11 @@
                             noti.close();
                         };
                     }
+
+                    // 成功點擊後，延遲 10 秒執行自動截圖 (確保頁面跳轉完成)
+                    setTimeout(() => {
+                        autoCapture();
+                    }, 10000);
                 }
             } else {
                 console.log(`[NOL Bot] 「完成選擇」按鈕未準備好或已被禁用，請留意畫面狀態。`);
