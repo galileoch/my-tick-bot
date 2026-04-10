@@ -386,6 +386,16 @@
                 console.log(normLog);
             }
 
+            // Block 1 或 2 有任何吉位即時提示
+            for (const [gId, count] of Object.entries(groupCounts)) {
+                const bn = getBlockNum(gId);
+                if (bn === 1 || bn === 2) {
+                    console.warn(`[NOL Bot] ⚠️ BLOCK ${bn} 發現 ${count} 個吉位！`);
+                    playCharmSound();
+                    break; // 響一次就夠
+                }
+            }
+
             // 定義 Block 優先次序
             const priorityList = [1, 2, 13, 14, 15, 12, 11, 16, 10, 17, 9, 18, 31, 32, 33, 30];
 
