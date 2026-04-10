@@ -25,6 +25,11 @@
     // 防止重複點擊同一座位
     let isSeatClicked = false;
 
+    // 記錄失敗過嘅座位組合，2 分鐘內唔會重試
+    const failedCombos = new Map();
+    let lastAttemptedComboKey = null;
+    const COMBO_COOLDOWN_MS = 2 * 60 * 1000; // 2 分鐘
+
     // 建立浮動按鈕控制 AutoSelect 狀態
     const resumeBtn = document.createElement('button');
     resumeBtn.style.position = 'fixed';
@@ -404,14 +409,36 @@
             let targetGroupId = null;
 
             if (multiSeatGroupIds.length > 0) {
-                // 優先根據 priorityList 尋找
+                // 優先根據 priorityList 尋找，同時檢查冷卻
                 for (let i = 0; i < priorityList.length; i++) {
-                    const priorityBlock = priorityList[i]; // priorityList 係 Number
+                    const priorityBlock = priorityList[i];
                     let foundHit = multiSeatGroupIds.find(gId => {
                         return getBlockNum(gId) === priorityBlock;
                     });
 
                     if (foundHit) {
+                        // 先收集該 block 嘅吉位
+                        let candidateSeats = [];
+                        for (let j = 0; j < availableSeats.length; j++) {
+                            const seat = availableSeats[j];
+                            const parentG = seat.closest('g');
+                            const gId = parentG ? (parentG.id || '') : '';
+                            if (gId === foundHit) {
+                                candidateSeats.push(seat);
+                                if (candidateSeats.length === 4) break;
+                            }
+                        }
+
+                        // 檢查組合是否仲喺冷卻
+                        const comboKey = candidateSeats.map(s => s.id || '').sort().join('|');
+                        const lastFail = failedCombos.get(comboKey);
+                        if (lastFail && (Date.now() - lastFail < COMBO_COOLDOWN_MS)) {
+                            const remainSec = Math.ceil((COMBO_COOLDOWN_MS - (Date.now() - lastFail)) / 1000);
+                            const bv = String(priorityBlock);
+                            console.log(`[NOL Bot] 區塊 ${bv} 組合仲喺冷卻中 (剩餘 ${remainSec}s)，試下一個 Block...`);
+                            continue; // 跳過，試下一個 priority block
+                        }
+
                         targetGroupId = foundHit;
                         break;
                     }
@@ -434,11 +461,14 @@
                     const gId = parentG ? (parentG.id || '') : '';
                     if (gId === targetGroupId) {
                         targetSeats.push(seat);
-                        if (targetSeats.length === 4) break; // 最多 4 個
+                        if (targetSeats.length === 4) break;
                     }
                 }
 
                 if (targetSeats.length > 0) {
+                    const comboKey = targetSeats.map(s => s.id || '').sort().join('|');
+                    lastAttemptedComboKey = comboKey;
+
                     console.log(`[NOL Bot] 準備 Click 區塊 ${blockValue} 嘅 ${targetSeats.length} 個吉位...`);
 
                     targetSeats.forEach((targetSeat, index) => {
@@ -649,10 +679,17 @@
     }
 
     function triggerRemoveAll() {
+        // 記錄失敗組合
+        if (lastAttemptedComboKey) {
+            failedCombos.set(lastAttemptedComboKey, Date.now());
+            console.log(`[NOL Bot] 組合已加入冷卻名單 (2 分鐘內不重試)`);
+            lastAttemptedComboKey = null;
+        }
+
         const removeAllBtn = document.querySelector('[class*="InfoSelected_headerRemoveButton"]');
         if (removeAllBtn) {
             console.log('[NOL Bot] 只得 1 個位或無連位，全部刪除並重啟...');
-            removeAllBtn.click(); // 這會觸發之前加過的全域 click 監聽，令到 isSeatClicked 變 false
+            removeAllBtn.click(); // 這會觸發之前加過的全域 click 監聯，令到 isSeatClicked 變 false
         } else {
             console.log('[NOL Bot] 無法找到「全部刪除」按鈕，手動重啟...');
             isSeatClicked = false;
