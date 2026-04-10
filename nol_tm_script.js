@@ -25,10 +25,11 @@
     // 防止重複點擊同一座位
     let isSeatClicked = false;
 
-    // 記錄失敗過嘅座位組合，2 分鐘內唔會重試
-    const failedCombos = new Map();
+    // 記錄失敗過嘅座位組合，冷卻時間按失敗次數遞增 (2min → 4min → 8min ...)
+    const failedCombos = new Map(); // key -> { time: timestamp, count: failCount }
     let lastAttemptedComboKey = null;
-    const COMBO_COOLDOWN_MS = 2 * 60 * 1000; // 2 分鐘
+    const COMBO_BASE_COOLDOWN_MS = 2 * 60 * 1000; // 基礎 2 分鐘
+    let lastCooldownLogSec = new Map(); // 限制冷卻日誌顯示頻率 (per combo)
 
     // 建立浮動按鈕控制 AutoSelect 狀態
     const resumeBtn = document.createElement('button');
@@ -431,12 +432,20 @@
 
                         // 檢查組合是否仲喺冷卻
                         const comboKey = candidateSeats.map(s => s.id || '').sort().join('|');
-                        const lastFail = failedCombos.get(comboKey);
-                        if (lastFail && (Date.now() - lastFail < COMBO_COOLDOWN_MS)) {
-                            const remainSec = Math.ceil((COMBO_COOLDOWN_MS - (Date.now() - lastFail)) / 1000);
-                            const bv = String(priorityBlock);
-                            console.log(`[NOL Bot] 區塊 ${bv} 組合仲喺冷卻中 (剩餘 ${remainSec}s)，試下一個 Block...`);
-                            continue; // 跳過，試下一個 priority block
+                        const failRecord = failedCombos.get(comboKey);
+                        if (failRecord) {
+                            const cooldownMs = COMBO_BASE_COOLDOWN_MS * Math.pow(2, failRecord.count - 1);
+                            const elapsed = Date.now() - failRecord.time;
+                            if (elapsed < cooldownMs) {
+                                const remainSec = Math.ceil((cooldownMs - elapsed) / 1000);
+                                if (remainSec % 60 === 0 && remainSec !== lastCooldownLogSec.get(comboKey)) {
+                                    lastCooldownLogSec.set(comboKey, remainSec);
+                                    const bv = String(priorityBlock);
+                                    const cooldownMin = Math.round(cooldownMs / 60000);
+                                    console.log(`[NOL Bot] 區塊 ${bv} 組合冷卻中 (第${failRecord.count}次失敗, 剩餘 ${remainSec}s / 總${cooldownMin}min)，試下一個 Block...`);
+                                }
+                                continue;
+                            }
                         }
 
                         targetGroupId = foundHit;
@@ -679,10 +688,13 @@
     }
 
     function triggerRemoveAll() {
-        // 記錄失敗組合
+        // 記錄失敗組合，遞增失敗次數
         if (lastAttemptedComboKey) {
-            failedCombos.set(lastAttemptedComboKey, Date.now());
-            console.log(`[NOL Bot] 組合已加入冷卻名單 (2 分鐘內不重試)`);
+            const prev = failedCombos.get(lastAttemptedComboKey);
+            const newCount = prev ? prev.count + 1 : 1;
+            failedCombos.set(lastAttemptedComboKey, { time: Date.now(), count: newCount });
+            const cooldownMin = Math.round((COMBO_BASE_COOLDOWN_MS * Math.pow(2, newCount - 1)) / 60000);
+            console.log(`[NOL Bot] 組合已加入冷卻名單 (第${newCount}次失敗, 冷卻 ${cooldownMin} 分鐘)`);
             lastAttemptedComboKey = null;
         }
 
