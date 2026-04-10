@@ -19,6 +19,35 @@
     // 防止重複點擊同一座位
     let isSeatClicked = false;
 
+    // 播放提示音效 (利用 AudioContext 無需載入外部資源)
+    function playCharmSound() {
+        try {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContext) return;
+            const ctx = new AudioContext();
+            const now = ctx.currentTime;
+            
+            const playTone = (freq, time, duration) => {
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.type = 'sine';
+                osc.frequency.value = freq;
+                gain.gain.setValueAtTime(0, time);
+                gain.gain.linearRampToValueAtTime(0.5, time + 0.05);
+                gain.gain.exponentialRampToValueAtTime(0.01, time + duration);
+                osc.start(time);
+                osc.stop(time + duration);
+            };
+            
+            playTone(659.25, now, 0.3); // E5
+            playTone(1046.50, now + 0.15, 0.5); // C6
+        } catch (e) {
+            console.warn("[NOL Bot] 無法播放提示音", e);
+        }
+    }
+
     const checkAvailableSeats = setInterval(() => {
         // 檢查是否有按鈕出現，並且確保佢係 parent 嘅唯一 child (only child) 先點擊
         const targetConfirmBtn = document.querySelector('button.ModalConfirm_button__qDjC3:only-child');
@@ -108,6 +137,7 @@
                 }
 
                 if (targetSeat) {
+                    playCharmSound();
                     console.log(`[NOL Bot] 準備 Click 第一個吉位 (ID: ${targetSeat.id || '無ID'})`);
 
                     // 方法一：嘗試用 React 內部 onClick 直接觸發 (大部份 Next.js / React 網頁適用)
