@@ -25,26 +25,188 @@
     // 防止重複點擊同一座位
     let isSeatClicked = false;
 
+    // ── 功能開關 ──────────────────────────────────────
+    const ENABLE_AUTO_CAPTURE = false; // 設為 true 可啟用成功後自動截圖
+    // ─────────────────────────────────────────────────
+
     // 記錄失敗過嘅座位組合，冷卻時間按失敗次數遞增 (2min → 4min → 8min ...)
     const failedCombos = new Map(); // key -> { time: timestamp, count: failCount }
     let lastAttemptedComboKey = null;
     const COMBO_BASE_COOLDOWN_MS = 2 * 60 * 1000; // 基礎 2 分鐘
     let lastCooldownLogSec = new Map(); // 限制冷卻日誌顯示頻率 (per combo)
 
-    // 建立浮動按鈕控制 AutoSelect 狀態
-    const resumeBtn = document.createElement('button');
-    resumeBtn.style.position = 'fixed';
-    resumeBtn.style.top = '20px';
-    resumeBtn.style.right = '20px';
-    resumeBtn.style.zIndex = '999999';
-    resumeBtn.style.padding = '12px 20px';
-    resumeBtn.style.fontSize = '16px';
-    resumeBtn.style.fontWeight = 'bold';
-    resumeBtn.style.color = '#fff';
-    resumeBtn.style.border = 'none';
-    resumeBtn.style.borderRadius = '8px';
-    resumeBtn.style.cursor = 'pointer';
-    resumeBtn.style.boxShadow = '0 4px 6px rgba(0,0,0,0.3)';
+    // ═══ 控制面板 (Control Panel) ══════════════════════════════════════
+    const controlPanel = document.createElement('div');
+    Object.assign(controlPanel.style, {
+        position: 'fixed',
+        top: '20px',
+        right: '20px',
+        zIndex: '999999',
+        backgroundColor: 'rgba(20,20,30,0.92)',
+        border: '1px solid #555',
+        borderRadius: '10px',
+        boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '13px',
+        color: '#eee',
+        minWidth: '210px',
+        overflow: 'hidden',
+        userSelect: 'none',
+        opacity: '0.2',
+        transition: 'opacity 0.3s ease'
+    });
+    controlPanel.addEventListener('mouseenter', () => controlPanel.style.opacity = '0.95');
+    controlPanel.addEventListener('mouseleave', () => controlPanel.style.opacity = '0.2');
+
+    // 標題列
+    const cpHeader = document.createElement('div');
+    Object.assign(cpHeader.style, {
+        backgroundColor: '#1e1e2e',
+        padding: '8px 12px',
+        cursor: 'move',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        fontWeight: 'bold',
+        fontSize: '13px',
+        borderBottom: '1px solid #444'
+    });
+    const cpTitle = document.createElement('span');
+    cpTitle.innerText = '🤖 NOL Bot';
+    const cpMinBtn = document.createElement('button');
+    cpMinBtn.innerText = '−';
+    Object.assign(cpMinBtn.style, {
+        background: 'transparent', border: 'none', color: '#aaa',
+        cursor: 'pointer', fontSize: '16px', padding: '0', lineHeight: '1'
+    });
+    cpHeader.appendChild(cpTitle);
+    cpHeader.appendChild(cpMinBtn);
+    controlPanel.appendChild(cpHeader);
+
+    // 內容區
+    const cpBody = document.createElement('div');
+    Object.assign(cpBody.style, { padding: '10px 14px 12px' });
+    controlPanel.appendChild(cpBody);
+
+    // 建立 toggle row 的 helper（隱藏 checkbox，改用 LED 指示燈 + ON/OFF badge）
+    function makeCheckRow(label, checked, onChange) {
+        const row = document.createElement('div');
+        Object.assign(row.style, {
+            display: 'flex', alignItems: 'center', gap: '8px',
+            padding: '6px 0', cursor: 'pointer',
+            borderBottom: '1px solid rgba(255,255,255,0.07)'
+        });
+
+        // LED 指示燈
+        const led = document.createElement('span');
+        Object.assign(led.style, {
+            width: '10px', height: '10px', borderRadius: '50%',
+            display: 'inline-block', flexShrink: '0',
+            boxShadow: '0 0 4px currentColor', transition: 'background 0.2s'
+        });
+
+        // 標籤文字
+        const txt = document.createElement('span');
+        txt.innerText = label;
+        Object.assign(txt.style, { flex: '1', fontSize: '12px' });
+
+        // ON / OFF badge
+        const badge = document.createElement('span');
+        Object.assign(badge.style, {
+            fontSize: '10px', fontWeight: 'bold', padding: '1px 5px',
+            borderRadius: '3px', minWidth: '26px', textAlign: 'center',
+            transition: 'background 0.2s'
+        });
+
+        const setState = (v) => {
+            led.style.background = v ? '#4CAF50' : '#555';
+            led.style.color = v ? '#4CAF50' : '#555';
+            badge.innerText = v ? 'ON' : 'OFF';
+            badge.style.background = v ? '#1b5e20' : '#333';
+            badge.style.color = v ? '#a5d6a7' : '#888';
+        };
+        setState(checked);
+
+        // 隱藏 checkbox（保留語義）
+        const cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.checked = checked;
+        cb.style.display = 'none';
+
+        row.addEventListener('click', () => {
+            cb.checked = !cb.checked;
+            setState(cb.checked);
+            onChange(cb.checked);
+        });
+
+        row.appendChild(led);
+        row.appendChild(txt);
+        row.appendChild(badge);
+        row.appendChild(cb);
+        cpBody.appendChild(row);
+        return cb;
+    }
+
+    // 狀態變量（替代原來 ENABLE_AUTO_CAPTURE 常數）
+    let enableAutoSelect = true;  // AutoSelect 主流開/關
+    let enableAutoConfirm = true; // AutoConfirm Modal 開/關
+    let enablePhotoCapture = false; // PhotoCapture 開/關
+
+    const cbAutoSelect = makeCheckRow('AutoSelect', enableAutoSelect, (v) => {
+        enableAutoSelect = v;
+        if (v) {
+            isSeatClicked = false;
+            console.log('[NOL Bot] AutoSelect 已開啟');
+        } else {
+            console.log('[NOL Bot] AutoSelect 已暫停');
+        }
+        updateBtnState();
+    });
+
+    makeCheckRow('AutoConfirm Modal', enableAutoConfirm, (v) => {
+        enableAutoConfirm = v;
+        console.log(`[NOL Bot] AutoConfirm Modal 已${v ? '開啟' : '關閉'}`);
+    });
+
+    makeCheckRow('Photo Capture', enablePhotoCapture, (v) => {
+        enablePhotoCapture = v;
+        console.log(`[NOL Bot] Photo Capture 已${v ? '開啟' : '關閉'}`);
+    });
+
+    // 狀態標昏列 (AutoSelect 運行中 / 已暫停)
+    const cpStatusBar = document.createElement('div');
+    Object.assign(cpStatusBar.style, {
+        marginTop: '8px', padding: '4px 0', textAlign: 'center',
+        fontSize: '11px', color: '#aaa'
+    });
+    cpBody.appendChild(cpStatusBar);
+
+    // minimize 功能
+    let cpMinimized = false;
+    cpMinBtn.onclick = (e) => {
+        e.stopPropagation();
+        cpMinimized = !cpMinimized;
+        cpBody.style.display = cpMinimized ? 'none' : 'block';
+        cpMinBtn.innerText = cpMinimized ? '+' : '−';
+    };
+
+    // 拖曳
+    let cpDragging = false, cpSX = 0, cpSY = 0, cpIX = 0, cpIY = 0;
+    cpHeader.addEventListener('mousedown', (e) => {
+        if (e.target === cpMinBtn) return;
+        cpDragging = true;
+        cpSX = e.clientX; cpSY = e.clientY;
+        const r = controlPanel.getBoundingClientRect();
+        cpIX = r.left; cpIY = r.top;
+        e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => {
+        if (!cpDragging) return;
+        controlPanel.style.left = `${cpIX + (e.clientX - cpSX)}px`;
+        controlPanel.style.top = `${cpIY + (e.clientY - cpSY)}px`;
+        controlPanel.style.right = 'auto';
+    });
+    document.addEventListener('mouseup', () => { cpDragging = false; });
+    // ═════════════════════════════════════════════════════════
 
     // =========================================
     // 浮動日誌視窗 (Log Dialog) 設定
@@ -167,8 +329,10 @@
     });
 
     function addLogToUI(text, type) {
+        const n = new Date();
+        const ts = `${String(n.getHours()).padStart(2, '0')}:${String(n.getMinutes()).padStart(2, '0')}:${String(n.getSeconds()).padStart(2, '0')}`;
         const line = document.createElement('div');
-        line.innerText = text;
+        line.innerText = `[${ts}] ${text}`;
         line.style.borderBottom = '1px solid rgba(255,255,255,0.1)';
         line.style.paddingBottom = '3px';
         line.style.marginBottom = '3px';
@@ -241,34 +405,23 @@
         });
     }
 
-    // 將按鈕同視窗加入畫面
+    // 將控制面板同日誌視窗加入畫面
     const addBtnInterval = setInterval(() => {
         if (document.body) {
-            document.body.appendChild(resumeBtn);
+            document.body.appendChild(controlPanel);
             document.body.appendChild(logContainer);
             clearInterval(addBtnInterval);
         }
     }, 100);
 
     const updateBtnState = () => {
-        if (isSeatClicked) {
-            resumeBtn.innerText = '▶ 恢復 AutoSelect (已暫停)';
-            resumeBtn.style.backgroundColor = '#f44336';
-        } else {
-            resumeBtn.innerText = '⏸ 暫停 AutoSelect (運行中)';
-            resumeBtn.style.backgroundColor = '#4CAF50';
-        }
+        const running = !isSeatClicked && enableAutoSelect;
+        cpStatusBar.innerText = running ? '🟢 AutoSelect 運行中' : '🔴 AutoSelect 已暫停';
+        cpStatusBar.style.color = running ? '#4CAF50' : '#f44336';
+        cbAutoSelect.checked = enableAutoSelect;
     };
 
-    resumeBtn.onclick = () => {
-        isSeatClicked = !isSeatClicked;
-        updateBtnState();
-        if (!isSeatClicked) {
-            console.log('[NOL Bot] 手動重啟 AutoSelect 流程！');
-        } else {
-            console.log('[NOL Bot] 手動暫停 AutoSelect 流程！');
-        }
-    };
+    // 面板點擊 AutoSelect checkbox 已於 makeCheckRow 内處理，不需要實體按鈕
 
     // 監聽網頁上的「全部删除」按鈕
     document.addEventListener('click', (e) => {
@@ -318,13 +471,14 @@
     }
 
     const checkAvailableSeats = setInterval(() => {
-        // 檢查是否有按鈕出現，並且確保佢係 parent 嘅唯一 child (only child) 先點擊
+        // AutoConfirm Modal
         const targetConfirmBtn = document.querySelector('button.ModalConfirm_button__qDjC3:only-child');
-        if (targetConfirmBtn) {
+        if (targetConfirmBtn && enableAutoConfirm) {
             console.log('[NOL Bot] 發現單一 Modal 按鈕，執行點擊！');
             targetConfirmBtn.click();
         }
 
+        if (!enableAutoSelect) return;
         if (isSeatClicked) return;
 
         // 確保名單係空嘅先開始新一輪，避免異步導致新舊位溝埋一齊
@@ -353,11 +507,8 @@
             });
 
             // 將結果分開組合，小於 27 放一堆，大於等於 27 放一堆
-            const now = new Date();
-            const timeString = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
-
-            let warnLog = `[NOL Bot ${timeString}] 三樓以下嘅座位分佈：`;
-            let normLog = `[NOL Bot ${timeString}] 三樓嘅座位分佈：`;
+            let warnLog = `[NOL Bot] 三樓以下嘅座位分佈：`;
+            let normLog = `[NOL Bot] 三樓嘅座位分佈：`;
             let hasWarn = false;
             let hasNorm = false;
 
@@ -388,14 +539,14 @@
             }
 
             // >= 27 嘅用 LOG 打印
-            if (hasNorm) {
-                console.log(normLog);
-            }
+            // if (hasNorm) {
+            //     console.log(normLog);
+            // }
 
             // Block 1 或 2 有任何吉位即時提示
             for (const [gId, count] of Object.entries(groupCounts)) {
                 const bn = getBlockNum(gId);
-                if (bn === 1 || bn === 2) {
+                if (bn === 1 || bn === 2 || bn === 11 || bn === 12 || bn === 13 || bn === 14 || bn === 15 || bn === 16) {
                     console.warn(`[NOL Bot] ⚠️ BLOCK ${bn} 發現 ${count} 個吉位！`);
                     playCharmSound();
                     break; // 響一次就夠
@@ -677,9 +828,11 @@
                     }
 
                     // 成功點擊後，延遲 10 秒執行自動截圖 (確保頁面跳轉完成)
-                    setTimeout(() => {
-                        autoCapture();
-                    }, 10000);
+                    if (enablePhotoCapture) {
+                        setTimeout(() => {
+                            autoCapture();
+                        }, 10000);
+                    }
                 }
             } else {
                 console.log(`[NOL Bot] 「完成選擇」按鈕未準備好或已被禁用，請留意畫面狀態。`);
