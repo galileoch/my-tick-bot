@@ -715,25 +715,25 @@
         }
 
         // === Row 篩選規則 ===
-        const specialBlocks = new Set([1, 2, 11, 12, 13, 14, 15, 16, 31, 32, 30, 33, 9, 10, 17, 18]);
+        const specialBlocks = new Set([1, 2, 11, 12, 13, 14, 15, 16, 9, 10, 17, 18]);
         const blockNum = seats[0].block !== 'unknown' ? parseInt(seats[0].block, 10) : NaN;
 
-        // 非 Special Block → 只接受第 1-3 排
+        // 非 Special Block → 只接受第 1-6 排
         if (!specialBlocks.has(blockNum)) {
-            const allowedRows = new Set([1, 2, 3]);
+            const allowedRows = new Set([1, 2, 3, 4, 5, 6]);
             const badRows = seats.filter(s => !allowedRows.has(s.row));
             if (badRows.length === seats.length) {
-                console.warn(`[NOL Bot] Block ${blockNum} 非特選區且無第 1-3 排座位，全部刪除並重試...`);
+                console.warn(`[NOL Bot] Block ${blockNum} 非特選區且無第 1-6 排座位，全部刪除並重試...`);
                 triggerRemoveAll();
                 return;
             }
             badRows.forEach(s => {
-                console.log(`[NOL Bot] Block ${blockNum} 非特選區，移除非第 1-3 排座位: ${s.text}`);
+                console.log(`[NOL Bot] Block ${blockNum} 非特選區，移除非第 1-6 排座位: ${s.text}`);
                 if (s.removeBtn) s.removeBtn.click();
             });
             seats = seats.filter(s => allowedRows.has(s.row));
             if (seats.length <= 1) {
-                console.warn(`[NOL Bot] Block ${blockNum} 第 1-3 排位不足 2 個，全部刪除並重試...`);
+                console.warn(`[NOL Bot] Block ${blockNum} 第 1-6 排位不足 2 個，全部刪除並重試...`);
                 triggerRemoveAll();
                 return;
             }
