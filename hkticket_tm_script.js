@@ -137,16 +137,20 @@
             const style = document.createElement('style');
             style.id = 'tm-style';
             style.textContent = `
-                .tm-panel { position: fixed; z-index: 999999; background: #222; color: #fff; border: 1px solid #555; border-radius: 5px; opacity: 0.4; transition: opacity 0.3s; font-family: sans-serif; resize: both; overflow: hidden; display: flex; flex-direction: column; }
+                .tm-panel { position: fixed; z-index: 999999; background: #222; color: #fff; border: 1px solid #555; border-radius: 5px; opacity: 0.4; transition: opacity 0.3s; font-family: sans-serif; resize: both; overflow: hidden; display: flex; flex-direction: column; min-width: 200px; min-height: 140px; box-sizing: border-box; }
                 .tm-panel:hover { opacity: 1.0 !important; }
                 .tm-header { padding: 5px 10px; background: #333; cursor: move; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #555; border-radius: 5px 5px 0 0; flex-shrink: 0; }
                 .tm-header-btns span { cursor: pointer; margin-left: 8px; color: #aaa; }
                 .tm-header-btns span:hover { color: #fff; }
-                .tm-content { padding: 10px; font-size: 13px; flex: 1; overflow-y: auto; box-sizing: border-box; width: 100%; }
-                #tm-log-content { color: #0f0; line-height: 1.4; word-wrap: break-word;}
-                #tm-log-content div { margin-bottom: 4px; border-bottom: 1px solid #333; padding-bottom: 2px;}
+                .tm-content { padding: 10px; font-size: 13px; flex: 1; min-height: 0; overflow: auto; box-sizing: border-box; width: 100%; }
+                #tm-log-content { color: #0f0; line-height: 1.4; word-wrap: break-word; }
+                #tm-log-content div { margin-bottom: 4px; border-bottom: 1px solid #333; padding-bottom: 2px; }
+                #tm-control-content { display: flex; flex-direction: column; overflow: hidden; gap: 6px; }
+                #tm-date-list-container { flex: 0 1 auto; max-height: 28%; overflow-y: auto; background: #333; padding: 4px; border: 1px solid #555; border-radius: 4px; }
+                #tm-priority-list-container { flex: 1 1 auto; min-height: 80px; overflow-y: auto; background: #333; padding: 4px; border: 1px solid #555; border-radius: 4px; }
+                .tm-control-fields { flex-shrink: 0; }
                 .tm-hidden { display: none !important; }
-                #tm-start-btn { width: 100%; padding: 8px; background: #007bff; border: none; border-radius: 4px; cursor: pointer; color: white; font-weight: bold;}
+                #tm-start-btn { width: 100%; padding: 8px; background: #007bff; border: none; border-radius: 4px; cursor: pointer; color: white; font-weight: bold; }
                 #tm-start-btn:hover { background: #0056b3; }
             `;
             document.head.appendChild(style);
@@ -183,6 +187,7 @@
             ctrlPanel.style.top = '280px';
             ctrlPanel.style.right = '20px';
             ctrlPanel.style.width = '240px';
+            ctrlPanel.style.height = '420px';
             ctrlPanel.innerHTML = `
                 <div class="tm-header">
                     <span>Control Panel</span>
@@ -191,30 +196,32 @@
                     </div>
                 </div>
                 <div id="tm-control-content" class="tm-content">
-                    <div id="tm-date-list-container" style="background:#333; padding:4px; margin-bottom:6px; border:1px solid #555; border-radius:4px;">
+                    <div id="tm-date-list-container">
                         <label style="display:block; font-size:12px; color:#ccc;">目標日期 (單選):</label>
                         <div style="color:#aaa; font-size:12px;">等待加載日期...</div>
                     </div>
-                    <div id="tm-priority-list-container" style="max-height:160px; overflow-y:auto; background:#33; padding:4px; margin-bottom:8px; border:1px solid #555; border-radius:4px;">
+                    <div id="tm-priority-list-container">
                         <label style="display:block; font-size:12px; color:#ccc;">優先票價次序 (點擊加入/取消):</label>
                         <div style="color:#aaa; font-size:12px;">等待加載票價... 揀選日期後會出現</div>
                     </div>
-                    <div style="margin-bottom:6px;">
-                        <label style="display:block; font-size:12px; color:#ccc;">購買數量:</label>
-                        <input type="number" id="tm-conf-qty" value="${CONFIG.targetQuantity}" style="width:100%; box-sizing:border-box; background:#333; color:#fff; border:1px solid #555; padding:4px; font-size:13px;">
+                    <div class="tm-control-fields">
+                        <div style="margin-bottom:6px;">
+                            <label style="display:block; font-size:12px; color:#ccc;">購買數量:</label>
+                            <input type="number" id="tm-conf-qty" value="${CONFIG.targetQuantity}" style="width:100%; box-sizing:border-box; background:#333; color:#fff; border:1px solid #555; padding:4px; font-size:13px;">
+                        </div>
+                        <div style="margin-bottom:6px;">
+                            <label style="display:block; font-size:12px; color:#ccc;">專屬密碼/首6位卡號:</label>
+                            <input type="text" id="tm-conf-code" value="${CONFIG.privilegeCode}" style="width:100%; box-sizing:border-box; background:#333; color:#fff; border:1px solid #555; padding:4px; font-size:13px;">
+                        </div>
+                        <div style="margin-bottom:10px;">
+                            <label style="display:block; font-size:12px; color:#ccc;">點擊延遲 (毫秒):</label>
+                            <input type="number" id="tm-conf-interval" value="${CONFIG.refreshInterval}" step="100" style="width:100%; box-sizing:border-box; background:#333; color:#fff; border:1px solid #555; padding:4px; font-size:13px;">
+                        </div>
+                        <label style="display:block; margin-bottom:10px; cursor:pointer; font-size:13px; color:#fff;">
+                            <input type="checkbox" id="tm-auto-code-chk" checked> 自動入卡號/密碼
+                        </label>
+                        <button id="tm-start-btn">開始</button>
                     </div>
-                    <div style="margin-bottom:6px;">
-                        <label style="display:block; font-size:12px; color:#ccc;">專屬密碼/首6位卡號:</label>
-                        <input type="text" id="tm-conf-code" value="${CONFIG.privilegeCode}" style="width:100%; box-sizing:border-box; background:#333; color:#fff; border:1px solid #555; padding:4px; font-size:13px;">
-                    </div>
-                    <div style="margin-bottom:10px;">
-                        <label style="display:block; font-size:12px; color:#ccc;">點擊延遲 (毫秒):</label>
-                        <input type="number" id="tm-conf-interval" value="${CONFIG.refreshInterval}" step="100" style="width:100%; box-sizing:border-box; background:#333; color:#fff; border:1px solid #555; padding:4px; font-size:13px;">
-                    </div>
-                    <label style="display:block; margin-bottom:10px; cursor:pointer; font-size:13px; color:#fff;">
-                        <input type="checkbox" id="tm-auto-code-chk" checked> 自動入卡號/密碼
-                    </label>
-                    <button id="tm-start-btn" style="width:100%; border:none; padding:8px; border-radius:4px; font-weight:bold; cursor:pointer;">開始</button>
                 </div>
             `;
             document.body.appendChild(ctrlPanel);
