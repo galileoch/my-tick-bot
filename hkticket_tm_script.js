@@ -240,6 +240,9 @@
         if (availableOptions.length === 0) {
             html += '<div style="color:#aaa; font-size:12px;">等待加載日期...</div>';
         } else {
+            if (availableOptions.length === 1) {
+                CONFIG.targetDate = availableOptions[0];
+            }
             availableOptions.forEach((opt, i) => {
                 if (CONFIG.targetDate === "7月10日" && i === 0) {
                     CONFIG.targetDate = opt;
@@ -300,17 +303,11 @@
 
     // 獨立運行的背景監控迴圈 (處理突發彈窗)
     setInterval(() => {
-        // 1. 遇到繁忙視窗時固定暫停點擊迴圈
+        // 1. 遇到繁忙視窗時記錄日誌 (暫停1秒繼續邏輯已移至 runAutoRefresh)
         const busyModalBtn = document.querySelector('.baxia-dialog-close');
         if (busyModalBtn && busyModalBtn.style.display !== 'none') {
             if (isRunning) {
-                if (document.getElementById('tm-log-panel')) tmlog("檢測到繁忙視窗，已暫停自動點擊！");
-                isRunning = false;
-                const startBtn = document.getElementById('tm-start-btn');
-                if (startBtn) {
-                    startBtn.innerText = "開始";
-                    startBtn.style.background = "#007bff";
-                }
+                if (document.getElementById('tm-log-panel')) tmlog("檢測到繁忙視窗，排隊等待解除...");
             }
         }
 
@@ -383,22 +380,38 @@
 
     async function runAutoRefresh() {
         while (isRunning) {
+            // 檢查是否有繁忙視窗 (如 Baxia 滑塊)
+            const busyModalBtn = document.querySelector('.baxia-dialog-close');
+            if (busyModalBtn && busyModalBtn.style.display !== 'none') {
+                tmlog("檢測到繁忙視窗，暫停1秒後繼續...");
+                await sleep(1000);
+                continue;
+            }
+
             // 嘗試尋找並點擊目標日期
             let targetEl = null;
             let altEl = null;
             const sessions = document.querySelectorAll('div[class*="session"]');
-            
+            const dateButtons = [];
+
             for (let el of sessions) {
                 // 只取最內層的 session 元素 (按鈕層級)
                 if (el.querySelector('div[class*="session"]')) continue;
-                
+
                 if (el.innerText.includes('年') && el.innerText.includes('月')) {
+                    dateButtons.push(el);
                     if (el.innerText.includes(CONFIG.targetDate)) {
                         targetEl = el;
                     } else {
                         altEl = el;
                     }
                 }
+            }
+
+            // 只有一個場次時，直接以該日期為目標（無需人手揀日期／票價）
+            if (dateButtons.length === 1) {
+                targetEl = dateButtons[0];
+                altEl = null;
             }
 
             if (targetEl) {
@@ -422,8 +435,9 @@
 
             // 檢查目標票價是否可用
             let foundPrice = null;
+            const isSingleDate = dateButtons.length === 1;
 
-            if (CONFIG.priorityPrices.length === 0) {
+            if (CONFIG.priorityPrices.length === 0 && !isSingleDate) {
                 tmlog(`[警告] 您尚未在 Control Panel 選擇任何優先票價！請先停用並選擇。`);
                 isRunning = false;
                 const btn = document.getElementById('tm-start-btn');
@@ -435,25 +449,37 @@
             }
 
             const priceElements = document.querySelectorAll('div[class*="levelItem___"]');
+            const isPriceAvailable = (el) => {
+                const text = el.innerText;
+                return !el.className.includes('disableClass') && !text.includes('暫無可售') && !text.includes('售罄');
+            };
+            const getPriceLabel = (el) => el.innerText.replace(/\n/g, '').replace(/暫無可售/g, '').replace(/售罄/g, '').trim();
 
-            // 按照 Priority List 次序尋找
-            for (let targetOpt of CONFIG.priorityPrices) {
-                for (let el of priceElements) {
-                    const text = el.innerText;
-                    const cleanText = text.replace(/\n/g, '').replace(/暫無可售/g, '').replace(/售罄/g, '').trim();
-
-                    if (cleanText === targetOpt) {
-                        if (!el.className.includes('disableClass') && !text.includes('暫無可售') && !text.includes('售罄')) {
+            if (CONFIG.priorityPrices.length > 0) {
+                // 按照 Priority List 次序尋找
+                for (let targetOpt of CONFIG.priorityPrices) {
+                    for (let el of priceElements) {
+                        if (getPriceLabel(el) === targetOpt && isPriceAvailable(el)) {
                             foundPrice = el;
-                            break; // 搵到就跳出內層迴圈
+                            break;
                         }
                     }
+                    if (foundPrice) break;
                 }
-                if (foundPrice) break; // 搵到就跳出外層 priority 迴圈
+            } else if (isSingleDate) {
+                for (let el of priceElements) {
+                    if (getPriceLabel(el) && isPriceAvailable(el)) {
+                        foundPrice = el;
+                        break;
+                    }
+                }
             }
 
             if (foundPrice) {
-                tmlog(`[成功] 按照 Priority List 找到可用票種！`);
+                const priceName = getPriceLabel(foundPrice);
+                tmlog(CONFIG.priorityPrices.length > 0
+                    ? `[成功] 按照 Priority List 找到可用票種: ${priceName}`
+                    : `[成功] 單日場次，自動選擇可提供票價: ${priceName}`);
                 isRunning = false;
                 const btn = document.getElementById('tm-start-btn');
                 if (btn) {
@@ -465,7 +491,8 @@
                 continueBuyFlow(foundPrice);
                 return;
             } else {
-                tmlog(`[等待] 未出現可選目標票價，循環點擊...`);
+                tmlog(`[等待] 未出現可選目標票價，暫停1秒後繼續...`);
+                await sleep(1000);
             }
         }
     }
