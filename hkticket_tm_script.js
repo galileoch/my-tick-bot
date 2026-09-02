@@ -12,12 +12,32 @@
 (function () {
     'use strict';
 
+    function loadStoredJson(key, fallback) {
+        try {
+            const raw = localStorage.getItem(key);
+            if (!raw) return fallback;
+            const parsed = JSON.parse(raw);
+            return parsed ?? fallback;
+        } catch (e) {
+            return fallback;
+        }
+    }
+
+    function savePriorityPrices() {
+        localStorage.setItem('tm_priority_prices', JSON.stringify(CONFIG.priorityPrices));
+    }
+
+    function saveTargetDate() {
+        localStorage.setItem('tm_target_date', CONFIG.targetDate);
+    }
+
     // ==========================================
     // 配置設定 (請在此處填入你想要的目標)
     // ==========================================
+    const storedPriorityPrices = loadStoredJson('tm_priority_prices', []);
     const CONFIG = {
-        targetDate: "7月10日",             // 目標場次日期 (例如: "2026年5月3日" 或 "5月3日")
-        priorityPrices: [],              // 優先選票清單 (動態抓取並由用家選擇)
+        targetDate: localStorage.getItem('tm_target_date') || "7月10日",
+        priorityPrices: Array.isArray(storedPriorityPrices) ? storedPriorityPrices : [],
         targetQuantity: 2,               // 目標購買數量 (腳本會自動點擊 '+' 掣直到達到此數量)
         privilegeCode: localStorage.getItem('tm_privilege_code') || "123456", // 專屬購票密碼或信用卡頭6位數字 (若不需要請留空 "")
         refreshInterval: 1000            // 點擊日期/重試的延遲時間 (ms)
@@ -242,10 +262,12 @@
         } else {
             if (availableOptions.length === 1) {
                 CONFIG.targetDate = availableOptions[0];
+                saveTargetDate();
             }
             availableOptions.forEach((opt, i) => {
                 if (CONFIG.targetDate === "7月10日" && i === 0) {
                     CONFIG.targetDate = opt;
+                    saveTargetDate();
                 }
                 const isChecked = CONFIG.targetDate === opt ? 'checked' : '';
                 html += `<label style="display:block; font-size:12px; margin-bottom:2px; cursor:pointer; color:#fff;">
@@ -260,6 +282,7 @@
         container.querySelectorAll('input[name="tm-date-radio"]').forEach(radio => {
             radio.addEventListener('change', (e) => {
                 CONFIG.targetDate = e.target.value;
+                saveTargetDate();
                 tmlog(`已更新目標日期為: ${CONFIG.targetDate}`);
             });
         });
@@ -296,6 +319,7 @@
                 } else {
                     CONFIG.priorityPrices = CONFIG.priorityPrices.filter(v => v !== val);
                 }
+                savePriorityPrices();
                 updatePriorityUI(lastExtractedPrices);
             });
         });
@@ -368,11 +392,7 @@
                 const optsArray = Array.from(opts);
                 if (JSON.stringify(optsArray) !== JSON.stringify(lastExtractedPrices) && optsArray.length > 0) {
                     lastExtractedPrices = optsArray;
-                    CONFIG.priorityPrices = []; // 重置之前的選擇
                     updatePriorityUI(optsArray);
-                    if (document.getElementById('tm-log-panel')) {
-                        console.log("優先票價已根據最新場次重置。");
-                    }
                 }
             }
         }
