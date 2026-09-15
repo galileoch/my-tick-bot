@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         HKTicketing Auto Select & Confirm
 // @namespace    http://tampermonkey.net/
-// @version      1.5
-// @description  自動處理購票須知及立即購買、選擇 hkticketing 場次、票價、增加數量，並記住 Log/Control Panel 的位置及尺寸
+// @version      1.6
+// @description  自動處理購票須知及立即購買、選擇 hkticketing 場次、票價、增加數量；票價選項按 activityId 保存 48 小時，並記住 Log/Control Panel 位置及尺寸
 // @author       You
 // @match        *://*.hkticketing.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hkticketing.com
@@ -11,6 +11,10 @@
 
 (function () {
     'use strict';
+
+    const PRIORITY_PRICE_STORAGE_PREFIX = 'tm_priority_prices_v2_';
+    const PRIORITY_PRICE_TTL_MS = 48 * 60 * 60 * 1000;
+    const LEGACY_PRIORITY_PRICE_KEY = 'tm_priority_prices';
 
     function loadStoredJson(key, fallback) {
         try {
@@ -23,27 +27,187 @@
         }
     }
 
+    function findActivityIdInObject(value, depth = 0, seen = new WeakSet()) {
+        if (!value || typeof value !== 'object' || depth > 3) return null;
+        if (seen.has(value)) return null;
+        seen.add(value);
+
+        for (const [key, child] of Object.entries(value)) {
+            const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+            if (normalizedKey === 'activityid' && child !== null && child !== undefined && String(child).trim()) {
+                return String(child).trim();
+            }
+        }
+
+        for (const child of Object.values(value)) {
+            if (child && typeof child === 'object') {
+                const found = findActivityIdInObject(child, depth + 1, seen);
+                if (found) return found;
+            }
+        }
+        return null;
+    }
+
+    function detectActivityId() {
+        const paramNames = ['activityId', 'activityid', 'activityID', 'activity_id'];
+
+        try {
+            const url = new URL(location.href);
+            for (const name of paramNames) {
+                const value = url.searchParams.get(name);
+                if (value && value.trim()) return value.trim();
+            }
+
+            const hashQueryIndex = url.hash.indexOf('?');
+            if (hashQueryIndex >= 0) {
+                const hashParams = new URLSearchParams(url.hash.slice(hashQueryIndex + 1));
+                for (const name of paramNames) {
+                    const value = hashParams.get(name);
+                    if (value && value.trim()) return value.trim();
+                }
+            }
+        } catch (e) {
+            // fallback below
+        }
+
+        const hrefMatch = location.href.match(/[?&#](?:activityId|activityid|activityID|activity_id)=([^&#]+)/i);
+        if (hrefMatch && hrefMatch[1]) {
+            try {
+                return decodeURIComponent(hrefMatch[1]).trim();
+            } catch (e) {
+                return hrefMatch[1].trim();
+            }
+        }
+
+        const pathMatch = location.pathname.match(/\/(?:activity|activityid)\/([^/?#]+)/i);
+        if (pathMatch && pathMatch[1]) return pathMatch[1].trim();
+
+        const activityNode = document.querySelector('[data-activity-id], [data-activityid]');
+        if (activityNode) {
+            const value = activityNode.getAttribute('data-activity-id') || activityNode.getAttribute('data-activityid');
+            if (value && value.trim()) return value.trim();
+        }
+
+        try {
+            const stateActivityId = findActivityIdInObject(history.state);
+            if (stateActivityId) return stateActivityId;
+        } catch (e) {
+            // ignore unexpected history state
+        }
+
+        return null;
+    }
+
+    function getPriorityPriceStorageKey(activityId) {
+        if (!activityId) return null;
+        return `${PRIORITY_PRICE_STORAGE_PREFIX}${encodeURIComponent(activityId)}`;
+    }
+
+    function cleanupExpiredPriorityPriceStorage() {
+        const now = Date.now();
+        const keysToDelete = [];
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (!key || !key.startsWith(PRIORITY_PRICE_STORAGE_PREFIX)) continue;
+            const stored = loadStoredJson(key, null);
+            const savedAt = stored && Number(stored.savedAt);
+            const prices = stored && stored.priorityPrices;
+            if (!savedAt || !Array.isArray(prices) || now - savedAt >= PRIORITY_PRICE_TTL_MS) {
+                keysToDelete.push(key);
+            }
+        }
+        keysToDelete.forEach(key => localStorage.removeItem(key));
+    }
+
+    function loadPriorityPricesForActivity(activityId) {
+        cleanupExpiredPriorityPriceStorage();
+        const key = getPriorityPriceStorageKey(activityId);
+        if (!key) return [];
+        const stored = loadStoredJson(key, null);
+        if (!stored || !Array.isArray(stored.priorityPrices) || !Number(stored.savedAt)) return [];
+        if (Date.now() - Number(stored.savedAt) >= PRIORITY_PRICE_TTL_MS) {
+            localStorage.removeItem(key);
+            return [];
+        }
+        return stored.priorityPrices;
+    }
+
+    function getPriorityPriceExpiryAt(activityId) {
+        const key = getPriorityPriceStorageKey(activityId);
+        if (!key) return Infinity;
+        const stored = loadStoredJson(key, null);
+        const savedAt = stored && Number(stored.savedAt);
+        return savedAt ? savedAt + PRIORITY_PRICE_TTL_MS : Infinity;
+    }
+
+    // 舊版全站共用同一個 key，無法判斷屬於邊個 show；升級後清走避免污染其他 activity。
+    localStorage.removeItem(LEGACY_PRIORITY_PRICE_KEY);
+    cleanupExpiredPriorityPriceStorage();
+
+    let activePriorityActivityId = detectActivityId();
+    const storedPriorityPrices = loadPriorityPricesForActivity(activePriorityActivityId);
+    let activePriorityExpiryAt = getPriorityPriceExpiryAt(activePriorityActivityId);
+
+    const CONFIG = {
+        targetDate: localStorage.getItem('tm_target_date') || '7月10日',
+        priorityPrices: Array.isArray(storedPriorityPrices) ? storedPriorityPrices : [],
+        targetQuantity: 2,
+        privilegeCode: localStorage.getItem('tm_privilege_code') || '123456',
+        refreshInterval: 1000
+    };
+
+    function resolveCurrentActivityId() {
+        const detected = detectActivityId();
+        if (detected) return detected;
+        const inPurchaseFlow = location.href.includes('/selectTicket') || location.href.includes('/confirmOrder');
+        return inPurchaseFlow ? activePriorityActivityId : null;
+    }
+
     function savePriorityPrices() {
-        localStorage.setItem('tm_priority_prices', JSON.stringify(CONFIG.priorityPrices));
+        const activityId = resolveCurrentActivityId();
+        const key = getPriorityPriceStorageKey(activityId);
+        if (!key) {
+            console.warn('[TM] 找不到 activityId，本次票價選項不會寫入持久化記憶。');
+            return;
+        }
+
+        const now = Date.now();
+        localStorage.setItem(key, JSON.stringify({
+            activityId,
+            priorityPrices: CONFIG.priorityPrices,
+            savedAt: now,
+            expiresAt: now + PRIORITY_PRICE_TTL_MS
+        }));
+        activePriorityActivityId = activityId;
+        activePriorityExpiryAt = now + PRIORITY_PRICE_TTL_MS;
+    }
+
+    function syncPriorityPricesForCurrentActivity(force = false) {
+        const detected = detectActivityId();
+        const inPurchaseFlow = location.href.includes('/selectTicket') || location.href.includes('/confirmOrder');
+        const nextActivityId = detected || (inPurchaseFlow ? activePriorityActivityId : null);
+        const activeMemoryStillFresh = Date.now() < activePriorityExpiryAt;
+        if (!force && nextActivityId === activePriorityActivityId && activeMemoryStillFresh) return false;
+
+        activePriorityActivityId = nextActivityId;
+        CONFIG.priorityPrices = loadPriorityPricesForActivity(nextActivityId);
+        activePriorityExpiryAt = getPriorityPriceExpiryAt(nextActivityId);
+
+        if (document.getElementById('tm-priority-list-container')) {
+            updatePriorityUI(lastExtractedPrices);
+        }
+        if (document.getElementById('tm-log-panel')) {
+            tmlog(nextActivityId
+                ? `已切換 activityId: ${nextActivityId}，載入該活動 48 小時內的票價選項。`
+                : '目前找不到 activityId，票價選項將不會跨頁保存。');
+        }
+        return true;
     }
 
     function saveTargetDate() {
         localStorage.setItem('tm_target_date', CONFIG.targetDate);
     }
 
-    // ==========================================
-    // 配置設定 (請在此處填入你想要的目標)
-    // ==========================================
-    const storedPriorityPrices = loadStoredJson('tm_priority_prices', []);
-    const CONFIG = {
-        targetDate: localStorage.getItem('tm_target_date') || "7月10日",
-        priorityPrices: Array.isArray(storedPriorityPrices) ? storedPriorityPrices : [],
-        targetQuantity: 2,               // 目標購買數量 (腳本會自動點擊 '+' 掣直到達到此數量)
-        privilegeCode: localStorage.getItem('tm_privilege_code') || "123456", // 專屬購票密碼或信用卡頭6位數字 (若不需要請留空 "")
-        refreshInterval: 1000            // 點擊日期/重試的延遲時間 (ms)
-    };
-
-    // 延遲執行函數
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
     function tmlog(msg) {
@@ -54,25 +218,22 @@
             const div = document.createElement('div');
             div.textContent = `[${time}] ${msg}`;
             l.appendChild(div);
-            // 自動捲動到底部
             l.scrollTop = l.scrollHeight;
         }
     }
 
-    // 尋找包含特定文字的元素 (支援多組可能文字)
     function findElementByText(selector, text) {
         const elements = document.querySelectorAll(selector);
-        for (let el of elements) {
+        for (const el of elements) {
             if (Array.isArray(text)) {
                 if (text.some(t => el.innerText.includes(t))) return el;
-            } else {
-                if (el.innerText.includes(text)) return el;
+            } else if (el.innerText.includes(text)) {
+                return el;
             }
         }
         return null;
     }
 
-    // 不斷重試尋找元素 (用作等待異步加載)
     async function waitForElementByText(selector, text, maxWaitMs = 10000) {
         const interval = 250;
         const maxRetries = maxWaitMs / interval;
@@ -95,7 +256,6 @@
         return null;
     }
 
-    // 模擬原生點擊事件 (適用於 React/Vue 等框架)
     function simulateClick(element) {
         if (!element) return;
         const options = { bubbles: true, cancelable: true, view: window };
@@ -126,54 +286,43 @@
     async function clickEnabledBuyNow(maxWaitMs = 4000) {
         const interval = 100;
         const maxRetries = Math.ceil(maxWaitMs / interval);
-
         for (let i = 0; i < maxRetries; i++) {
             const buyNowButtons = Array.from(document.querySelectorAll('button[class*="buyNowBtn___"], button'));
-            const buyNowBtn = buyNowButtons.find(btn =>
-                btn.innerText.trim() === '立即購買' && isButtonEnabled(btn)
-            );
-
+            const buyNowBtn = buyNowButtons.find(btn => btn.innerText.trim() === '立即購買' && isButtonEnabled(btn));
             if (buyNowBtn) {
                 simulateClick(buyNowBtn);
                 tmlog('[成功] 「立即購買」已 enable，自動點擊。');
                 return true;
             }
-
             await sleep(interval);
         }
-
         tmlog('[等待] 按完「知悉並同意」後未見到可點擊的「立即購買」。');
         return false;
     }
 
-    // 自動處理「購票須知」：先捲到底，觸發 scroll，再按「知悉並同意」
     let isHandlingTicketDisclaimer = false;
 
     async function handleTicketDisclaimer() {
         if (isHandlingTicketDisclaimer) return false;
 
         let modal = null;
-        const modals = document.querySelectorAll('.bui-modal');
-        for (const candidate of modals) {
+        for (const candidate of document.querySelectorAll('.bui-modal')) {
             const title = candidate.querySelector('.modalAndDrawerTitle, [class*="title___"]');
             if (title && title.innerText.includes('購票須知')) {
                 modal = candidate;
                 break;
             }
         }
-
         if (!modal || modal.dataset.tmDisclaimerHandled === '1') return false;
 
         const scrollContainer = modal.querySelector('.bui-scroll.bui-scroll-view-scroll-y, .bui-scroll-view-scroll-y');
         const getAgreeButton = () => Array.from(modal.querySelectorAll('.modalAndDrawerFooter button, button'))
             .find(btn => btn.innerText.trim().includes('知悉並同意'));
-
         if (!scrollContainer || !getAgreeButton()) return false;
 
         isHandlingTicketDisclaimer = true;
         try {
             tmlog('檢測到「購票須知」，自動捲動到最底閱讀...');
-
             const scrollToEnd = () => {
                 const bottom = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
                 if (typeof scrollContainer.scrollTo === 'function') {
@@ -181,15 +330,12 @@
                 } else {
                     scrollContainer.scrollTop = bottom;
                 }
-                // 再直接設一次，避免部分瀏覽器 / 元件 scrollTo 未完全到底。
                 scrollContainer.scrollTop = scrollContainer.scrollHeight;
                 scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
             };
 
             scrollToEnd();
             await sleep(300);
-
-            // 某些頁面會等 scroll 事件後才 enable 按鈕，最多重試約 2 秒。
             for (let i = 0; i < 10; i++) {
                 scrollToEnd();
                 const agreeBtn = getAgreeButton();
@@ -198,7 +344,6 @@
                     simulateClick(agreeBtn);
                     tmlog('[成功] 已捲到購票須知底部並點擊「知悉並同意」');
 
-                    // 等彈窗關閉／React 狀態更新，再按已 enable 的「立即購買」。
                     for (let j = 0; j < 15; j++) {
                         const modalStillVisible = document.documentElement.contains(modal) && isElementVisible(modal);
                         if (!modalStillVisible) break;
@@ -209,7 +354,6 @@
                 }
                 await sleep(200);
             }
-
             tmlog('[等待] 「知悉並同意」仍未可點擊，稍後再試。');
             return false;
         } finally {
@@ -217,9 +361,6 @@
         }
     }
 
-    // ==========================================
-    // Panel 位置 / 尺寸持久化
-    // ==========================================
     const PANEL_LAYOUT_KEY_PREFIX = 'tm_panel_layout_v1_';
     const PANEL_MARGIN = 8;
 
@@ -232,14 +373,12 @@
         const viewportHeight = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
         const maxWidth = Math.max(200, viewportWidth - PANEL_MARGIN * 2);
         const maxHeight = Math.max(140, viewportHeight - PANEL_MARGIN * 2);
-
         const width = Math.min(Math.max(Number(layout.width) || 200, 200), maxWidth);
         const height = Math.min(Math.max(Number(layout.height) || 140, 140), maxHeight);
         const maxLeft = Math.max(PANEL_MARGIN, viewportWidth - width - PANEL_MARGIN);
         const maxTop = Math.max(PANEL_MARGIN, viewportHeight - height - PANEL_MARGIN);
         const left = Math.min(Math.max(Number(layout.left) || PANEL_MARGIN, PANEL_MARGIN), maxLeft);
         const top = Math.min(Math.max(Number(layout.top) || PANEL_MARGIN, PANEL_MARGIN), maxTop);
-
         return { left, top, width, height };
     }
 
@@ -247,14 +386,7 @@
         if (!el || !el.id) return;
         const rect = el.getBoundingClientRect();
         if (!rect.width || !rect.height) return;
-
-        const layout = clampPanelLayout({
-            left: rect.left,
-            top: rect.top,
-            width: rect.width,
-            height: rect.height
-        });
-
+        const layout = clampPanelLayout({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
         localStorage.setItem(getPanelLayoutKey(el), JSON.stringify(layout));
     }
 
@@ -266,14 +398,12 @@
             width: defaults.width,
             height: defaults.height
         };
-
         let stored = null;
         try {
             stored = JSON.parse(localStorage.getItem(getPanelLayoutKey(el)) || 'null');
         } catch (e) {
             stored = null;
         }
-
         const layout = clampPanelLayout(stored && typeof stored === 'object' ? stored : defaultLayout);
         el.style.right = 'auto';
         el.style.left = `${layout.left}px`;
@@ -285,9 +415,7 @@
     function makeDraggable(el) {
         const header = el.querySelector('.tm-header');
         let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
-
         header.onmousedown = function (e) {
-            // 按最小化掣時唔啟動拖曳
             if (e.target.closest('.tm-header-btns')) return;
             e.preventDefault();
             pos3 = e.clientX;
@@ -295,14 +423,12 @@
             document.onmouseup = closeDragElement;
             document.onmousemove = elementDrag;
         };
-
         function elementDrag(e) {
             e.preventDefault();
             pos1 = pos3 - e.clientX;
             pos2 = pos4 - e.clientY;
             pos3 = e.clientX;
             pos4 = e.clientY;
-
             const next = clampPanelLayout({
                 left: el.offsetLeft - pos1,
                 top: el.offsetTop - pos2,
@@ -312,7 +438,6 @@
             el.style.left = `${next.left}px`;
             el.style.top = `${next.top}px`;
         }
-
         function closeDragElement() {
             document.onmouseup = null;
             document.onmousemove = null;
@@ -323,8 +448,6 @@
     function setupPersistentPanel(el, defaults) {
         restorePanelLayout(el, defaults);
         makeDraggable(el);
-
-        // native CSS resize 完成後自動記住 width / height。
         if (typeof ResizeObserver !== 'undefined') {
             let resizeTimer = null;
             const resizeObserver = new ResizeObserver(() => {
@@ -333,16 +456,9 @@
             });
             resizeObserver.observe(el);
         }
-
-        // 視窗尺寸改變時確保 panel 唔會跌出畫面，並保存修正後位置。
         window.addEventListener('resize', () => {
             const rect = el.getBoundingClientRect();
-            const layout = clampPanelLayout({
-                left: rect.left,
-                top: rect.top,
-                width: rect.width,
-                height: rect.height
-            });
+            const layout = clampPanelLayout({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
             el.style.left = `${layout.left}px`;
             el.style.top = `${layout.top}px`;
             el.style.width = `${layout.width}px`;
@@ -380,12 +496,7 @@
             logPanel.id = 'tm-log-panel';
             logPanel.className = 'tm-panel';
             logPanel.innerHTML = `
-                <div class="tm-header">
-                    <span>Log Panel</span>
-                    <div class="tm-header-btns">
-                        <span class="tm-min-btn">──</span>
-                    </div>
-                </div>
+                <div class="tm-header"><span>Log Panel</span><div class="tm-header-btns"><span class="tm-min-btn">──</span></div></div>
                 <div id="tm-log-content" class="tm-content"></div>
             `;
             document.body.appendChild(logPanel);
@@ -400,12 +511,7 @@
             ctrlPanel.id = 'tm-control-panel';
             ctrlPanel.className = 'tm-panel';
             ctrlPanel.innerHTML = `
-                <div class="tm-header">
-                    <span>Control Panel</span>
-                    <div class="tm-header-btns">
-                        <span class="tm-min-btn">──</span>
-                    </div>
-                </div>
+                <div class="tm-header"><span>Control Panel</span><div class="tm-header-btns"><span class="tm-min-btn">──</span></div></div>
                 <div id="tm-control-content" class="tm-content">
                     <div id="tm-date-list-container">
                         <label style="display:block; font-size:12px; color:#ccc;">目標日期 (單選):</label>
@@ -441,25 +547,28 @@
                 document.getElementById('tm-control-content').classList.toggle('tm-hidden');
             };
 
-            // 綁定輸入事件，即時更新 CONFIG 物件
-            document.getElementById('tm-conf-qty').addEventListener('input', (e) => CONFIG.targetQuantity = parseInt(e.target.value) || 1);
+            document.getElementById('tm-conf-qty').addEventListener('input', (e) => {
+                CONFIG.targetQuantity = parseInt(e.target.value) || 1;
+            });
             document.getElementById('tm-conf-code').addEventListener('input', (e) => {
                 CONFIG.privilegeCode = e.target.value;
                 localStorage.setItem('tm_privilege_code', e.target.value);
             });
-            document.getElementById('tm-conf-interval').addEventListener('input', (e) => CONFIG.refreshInterval = parseInt(e.target.value) || 1000);
+            document.getElementById('tm-conf-interval').addEventListener('input', (e) => {
+                CONFIG.refreshInterval = parseInt(e.target.value) || 1000;
+            });
 
             document.getElementById('tm-start-btn').onclick = function () {
                 if (isRunning) {
                     isRunning = false;
-                    this.innerText = "開始";
-                    this.style.background = "#007bff";
-                    tmlog("已暫停自動點擊！");
+                    this.innerText = '開始';
+                    this.style.background = '#007bff';
+                    tmlog('已暫停自動點擊！');
                 } else {
                     isRunning = true;
-                    this.innerText = "停止";
-                    this.style.background = "#dc3545";
-                    tmlog("啟動自動點擊循環！");
+                    this.innerText = '停止';
+                    this.style.background = '#dc3545';
+                    tmlog('啟動自動點擊循環！');
                     runAutoRefresh();
                 }
             };
@@ -473,7 +582,6 @@
     function updateDateUI(availableOptions) {
         const container = document.getElementById('tm-date-list-container');
         if (!container) return;
-
         let html = '<label style="display:block; font-size:12px; color:#ccc;">目標日期 (單選):</label>';
         if (availableOptions.length === 0) {
             html += '<div style="color:#aaa; font-size:12px;">等待加載日期...</div>';
@@ -483,20 +591,17 @@
                 saveTargetDate();
             }
             availableOptions.forEach((opt, i) => {
-                if (CONFIG.targetDate === "7月10日" && i === 0) {
+                if (CONFIG.targetDate === '7月10日' && i === 0) {
                     CONFIG.targetDate = opt;
                     saveTargetDate();
                 }
                 const isChecked = CONFIG.targetDate === opt ? 'checked' : '';
                 html += `<label style="display:block; font-size:12px; margin-bottom:2px; cursor:pointer; color:#fff;">
-                            <input type="radio" name="tm-date-radio" value="${opt}" ${isChecked} style="margin-right:6px;">
-                            ${opt}
+                            <input type="radio" name="tm-date-radio" value="${opt}" ${isChecked} style="margin-right:6px;">${opt}
                          </label>`;
             });
         }
-
         container.innerHTML = html;
-
         container.querySelectorAll('input[name="tm-date-radio"]').forEach(radio => {
             radio.addEventListener('change', (e) => {
                 CONFIG.targetDate = e.target.value;
@@ -509,7 +614,6 @@
     function updatePriorityUI(availableOptions) {
         const container = document.getElementById('tm-priority-list-container');
         if (!container) return;
-
         let html = '<label style="display:block; font-size:12px; color:#ccc;">優先票價次序 (點擊加入/刪除):</label>';
         if (availableOptions.length === 0) {
             html += '<div style="color:#aaa; font-size:12px;">等待加載票價... 揀選日期後會出現</div>';
@@ -517,18 +621,17 @@
             availableOptions.forEach((opt) => {
                 const idx = CONFIG.priorityPrices.indexOf(opt);
                 const isChecked = idx > -1 ? 'checked' : '';
-                const priorityBadge = idx > -1 ? `<span style="color:#0f0; margin-right:4px;">[${idx + 1}]</span>` : `<span style="color:#666; margin-right:4px;">[ - ]</span>`;
+                const priorityBadge = idx > -1
+                    ? `<span style="color:#0f0; margin-right:4px;">[${idx + 1}]</span>`
+                    : '<span style="color:#666; margin-right:4px;">[ - ]</span>';
                 html += `<div style="margin-top:4px; margin-bottom:4px; padding:2px; border-bottom:1px solid #444;">
                             <label style="cursor:pointer; display:flex; align-items:center; font-size:12px; color:#fff;">
-                                <input type="checkbox" class="tm-priority-chk" value="${opt}" ${isChecked} style="margin-right:6px;">
-                                ${priorityBadge} ${opt}
+                                <input type="checkbox" class="tm-priority-chk" value="${opt}" ${isChecked} style="margin-right:6px;">${priorityBadge} ${opt}
                             </label>
                          </div>`;
             });
         }
-
         container.innerHTML = html;
-
         container.querySelectorAll('.tm-priority-chk').forEach(chk => {
             chk.addEventListener('change', (e) => {
                 const val = e.target.value;
@@ -543,36 +646,29 @@
         });
     }
 
-    // 獨立運行的背景監控迴圈 (處理突發彈窗)
     setInterval(() => {
-        // 0. 自動處理詳情頁 / 購票流程出現的「購票須知」彈窗
+        syncPriorityPricesForCurrentActivity();
         handleTicketDisclaimer();
 
-        // 1. 遇到繁忙視窗時記錄日誌 (暫停1秒繼續邏輯已移至 runAutoRefresh)
         const busyModalBtn = document.querySelector('.baxia-dialog-close');
-        if (busyModalBtn && busyModalBtn.style.display !== 'none') {
-            if (isRunning) {
-                if (document.getElementById('tm-log-panel')) tmlog("檢測到繁忙視窗，排隊等待解除...");
-            }
+        if (busyModalBtn && busyModalBtn.style.display !== 'none' && isRunning) {
+            if (document.getElementById('tm-log-panel')) tmlog('檢測到繁忙視窗，排隊等待解除...');
         }
 
-        // 2. 自動填入專屬密碼 / 信用卡號
         const autoCodeChk = document.getElementById('tm-auto-code-chk');
         if (CONFIG.privilegeCode && autoCodeChk && autoCodeChk.checked) {
             const privilegeInput = document.querySelector('input[name="privilegeCode"]');
             if (privilegeInput && privilegeInput.value !== CONFIG.privilegeCode) {
-                if (document.getElementById('tm-log-panel')) tmlog("出現專屬購票密碼視窗，自動輸入密碼...");
-                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+                if (document.getElementById('tm-log-panel')) tmlog('出現專屬購票密碼視窗，自動輸入密碼...');
+                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
                 nativeInputValueSetter.call(privilegeInput, CONFIG.privilegeCode);
                 privilegeInput.dispatchEvent(new Event('input', { bubbles: true }));
                 privilegeInput.dispatchEvent(new Event('change', { bubbles: true }));
-
                 setTimeout(() => {
-                    const modalButtons = document.querySelectorAll('.mz-modal-footer button');
-                    for (let btn of modalButtons) {
+                    for (const btn of document.querySelectorAll('.mz-modal-footer button')) {
                         if (btn.innerText.includes('確定')) {
                             simulateClick(btn);
-                            if (document.getElementById('tm-log-panel')) tmlog("[成功] 點擊專屬購票「確定」按鈕");
+                            if (document.getElementById('tm-log-panel')) tmlog('[成功] 點擊專屬購票「確定」按鈕');
                             break;
                         }
                     }
@@ -580,21 +676,15 @@
             }
         }
 
-        // 3. 自動更新場次與票價選項 (僅在未運行時更新，避免影響效能)
         if (!isRunning && location.href.includes('/selectTicket')) {
-            // 更新日期
             const sessionElements = document.querySelectorAll('div[class*="session"]');
             if (sessionElements.length > 0) {
                 const dates = new Set();
                 const dRegex = /20\d{2}年(\d{1,2}月\d{1,2}日)/g;
-
                 sessionElements.forEach(el => {
                     let dMatch;
-                    while ((dMatch = dRegex.exec(el.innerText)) !== null) {
-                        dates.add(dMatch[1]);
-                    }
+                    while ((dMatch = dRegex.exec(el.innerText)) !== null) dates.add(dMatch[1]);
                 });
-
                 const dArray = Array.from(dates);
                 if (JSON.stringify(dArray) !== JSON.stringify(lastExtractedDates) && dArray.length > 0) {
                     lastExtractedDates = dArray;
@@ -602,12 +692,11 @@
                 }
             }
 
-            // 更新票價
             const priceElements = document.querySelectorAll('div[class*="levelItem___"]');
             if (priceElements.length > 0) {
                 const opts = new Set();
                 priceElements.forEach(el => {
-                    let rawText = el.innerText.replace(/\n/g, '').replace(/暫無可售/g, '').replace(/售罄/g, '').trim();
+                    const rawText = el.innerText.replace(/\n/g, '').replace(/暫無可售/g, '').replace(/售罄/g, '').trim();
                     if (rawText) opts.add(rawText);
                 });
                 const optsArray = Array.from(opts);
@@ -621,70 +710,57 @@
 
     async function runAutoRefresh() {
         while (isRunning) {
-            // 檢查是否有繁忙視窗 (如 Baxia 滑塊)
+            syncPriorityPricesForCurrentActivity();
+
             const busyModalBtn = document.querySelector('.baxia-dialog-close');
             if (busyModalBtn && busyModalBtn.style.display !== 'none') {
-                tmlog("檢測到繁忙視窗，暫停1秒後繼續...");
+                tmlog('檢測到繁忙視窗，暫停1秒後繼續...');
                 await sleep(1000);
                 continue;
             }
 
-            // 嘗試尋找並點擊目標日期
             let targetEl = null;
             let altEl = null;
             const sessions = document.querySelectorAll('div[class*="session"]');
             const dateButtons = [];
-
-            for (let el of sessions) {
-                // 只取最內層的 session 元素 (按鈕層級)
+            for (const el of sessions) {
                 if (el.querySelector('div[class*="session"]')) continue;
-
                 if (el.innerText.includes('年') && el.innerText.includes('月')) {
                     dateButtons.push(el);
-                    if (el.innerText.includes(CONFIG.targetDate)) {
-                        targetEl = el;
-                    } else {
-                        altEl = el;
-                    }
+                    if (el.innerText.includes(CONFIG.targetDate)) targetEl = el;
+                    else altEl = el;
                 }
             }
 
-            // 只有一個場次時，直接以該日期為目標（無需人手揀日期／票價）
             if (dateButtons.length === 1) {
                 targetEl = dateButtons[0];
                 altEl = null;
             }
 
             if (targetEl) {
-                // 如果目標日期已經是被點擊選中狀態，則先隨便點擊另一個日期迫使頁面刷新 (若有其他日期的話)
-                if (targetEl.className.includes('fouceStyle') || targetEl.className.includes('focusStyle')) {
-                    if (altEl) {
-                        tmlog(`該日期正處於選中狀態，先點擊其他日子作強制刷新...`);
-                        simulateClick(altEl);
-                        await sleep(400); // 稍候讓前端框架載入狀態
-                    }
+                if ((targetEl.className.includes('fouceStyle') || targetEl.className.includes('focusStyle')) && altEl) {
+                    tmlog('該日期正處於選中狀態，先點擊其他日子作強制刷新...');
+                    simulateClick(altEl);
+                    await sleep(400);
                 }
-
                 simulateClick(targetEl);
                 tmlog(`點擊目標日期: ${CONFIG.targetDate}`);
-                await sleep(CONFIG.refreshInterval); // 動態延遲等待 DOM 更新
+                await sleep(CONFIG.refreshInterval);
             } else {
                 tmlog(`未找到目標日期: ${CONFIG.targetDate}`);
                 await sleep(CONFIG.refreshInterval);
                 continue;
             }
 
-            // 檢查目標票價是否可用
             let foundPrice = null;
             const isSingleDate = dateButtons.length === 1;
-
             if (CONFIG.priorityPrices.length === 0 && !isSingleDate) {
-                tmlog(`[警告] 您尚未在 Control Panel 選擇任何優先票價！請先停用並選擇。`);
+                tmlog('[警告] 您尚未在 Control Panel 選擇任何優先票價！請先停用並選擇。');
                 isRunning = false;
                 const btn = document.getElementById('tm-start-btn');
                 if (btn) {
-                    btn.innerText = "開始";
-                    btn.style.background = "#007bff";
+                    btn.innerText = '開始';
+                    btn.style.background = '#007bff';
                 }
                 return;
             }
@@ -697,9 +773,8 @@
             const getPriceLabel = (el) => el.innerText.replace(/\n/g, '').replace(/暫無可售/g, '').replace(/售罄/g, '').trim();
 
             if (CONFIG.priorityPrices.length > 0) {
-                // 按照 Priority List 次序尋找
-                for (let targetOpt of CONFIG.priorityPrices) {
-                    for (let el of priceElements) {
+                for (const targetOpt of CONFIG.priorityPrices) {
+                    for (const el of priceElements) {
                         if (getPriceLabel(el) === targetOpt && isPriceAvailable(el)) {
                             foundPrice = el;
                             break;
@@ -708,7 +783,7 @@
                     if (foundPrice) break;
                 }
             } else if (isSingleDate) {
-                for (let el of priceElements) {
+                for (const el of priceElements) {
                     if (getPriceLabel(el) && isPriceAvailable(el)) {
                         foundPrice = el;
                         break;
@@ -724,26 +799,23 @@
                 isRunning = false;
                 const btn = document.getElementById('tm-start-btn');
                 if (btn) {
-                    btn.innerText = "開始";
-                    btn.style.background = "#007bff";
+                    btn.innerText = '開始';
+                    btn.style.background = '#007bff';
                 }
-
-                // 進入購買流程
                 continueBuyFlow(foundPrice);
                 return;
-            } else {
-                tmlog(`[等待] 未出現可選目標票價，暫停1秒後繼續...`);
-                await sleep(1000);
             }
+
+            tmlog('[等待] 未出現可選目標票價，暫停1秒後繼續...');
+            await sleep(1000);
         }
     }
 
     async function continueBuyFlow(priceElement) {
-        tmlog(`準備點擊票價...`);
+        tmlog('準備點擊票價...');
         simulateClick(priceElement);
-        await sleep(800); // 點擊後等待 AJAX 及 UI 更新
+        await sleep(800);
 
-        // 3. 點擊 + 掣以增加購買數量
         const buyNumContainer = await waitForElement('div[class*="buyNum___"]');
         if (buyNumContainer) {
             const spans = buyNumContainer.children;
@@ -751,95 +823,84 @@
                 const plusBtn = spans[2];
                 let currentQty = parseInt(spans[1].innerText) || 1;
                 tmlog(`當前數量: ${currentQty}，目標: ${CONFIG.targetQuantity}`);
-
                 while (currentQty < CONFIG.targetQuantity) {
                     simulateClick(plusBtn);
-                    await sleep(400); // 防過快點擊
+                    await sleep(400);
                     currentQty = parseInt(spans[1].innerText) || currentQty + 1;
                 }
                 tmlog(`[成功] 數量已到達: ${CONFIG.targetQuantity}`);
             }
         } else {
-            tmlog("[失敗] 找不到調整購買數量的區域");
+            tmlog('[失敗] 找不到調整購買數量的區域');
         }
 
-        // 等待「下一步」按鈕變為可點擊狀態
         await sleep(500);
-
-        // 4. 點擊確認購買按鈕 (下一步 / 立即購買)
         const confirmBtn = await waitForElementByText('button', ['下一步', '立即購買']);
         if (confirmBtn) {
-            tmlog("[成功] 點擊「下一步」或「立即購買」");
+            tmlog('[成功] 點擊「下一步」或「立即購買」');
             simulateClick(confirmBtn);
         } else {
-            tmlog("[失敗] 找不到確認購買按鈕");
+            tmlog('[失敗] 找不到確認購買按鈕');
         }
-
-        tmlog("=== 選擇流程完畢 ===");
+        tmlog('=== 選擇流程完畢 ===');
     }
 
-    // 透過 MutationObserver 監聽頁面載入與 SPA 路由跳轉
     let isExecutedSelectTicket = false;
     let isExecutedConfirmOrder = false;
-    let currentPath = "";
+    let currentPath = '';
 
-    const observer = new MutationObserver((mutations, obs) => {
+    const observer = new MutationObserver(() => {
         const url = location.href;
-
-        // 若發生跳頁，重設執行紀錄
         if (currentPath !== url) {
             currentPath = url;
             isExecutedSelectTicket = false;
             isExecutedConfirmOrder = false;
+            syncPriorityPricesForCurrentActivity();
 
             const isTargetRoute = url.includes('/selectTicket') || url.includes('/confirmOrder');
             const logPanel = document.getElementById('tm-log-panel');
             const ctrlPanel = document.getElementById('tm-control-panel');
-
             if (logPanel) logPanel.style.display = isTargetRoute ? 'flex' : 'none';
             if (ctrlPanel) ctrlPanel.style.display = isTargetRoute ? 'flex' : 'none';
 
-            if (!isTargetRoute && typeof isRunning !== 'undefined' && isRunning) {
+            if (!isTargetRoute && isRunning) {
                 isRunning = false;
                 const startBtn = document.getElementById('tm-start-btn');
                 if (startBtn) {
-                    startBtn.innerText = "開始";
-                    startBtn.style.background = "#007bff";
+                    startBtn.innerText = '開始';
+                    startBtn.style.background = '#007bff';
                 }
             }
 
             if (logPanel) {
-                tmlog("進入頁面: " + currentPath);
-                if (!isTargetRoute) tmlog("已離開自動操作頁面，隱藏面板。");
+                tmlog('進入頁面: ' + currentPath);
+                if (!isTargetRoute) tmlog('已離開自動操作頁面，隱藏面板。');
             } else {
-                console.log("進入頁面:", currentPath);
+                console.log('進入頁面:', currentPath);
             }
         }
 
-        // 1. 處理 /selectTicket (選擇票價頁面)
         if (url.includes('/selectTicket')) {
             const targetContainer = document.querySelector('div[class*="sessionList___"]');
             if (targetContainer && !isExecutedSelectTicket) {
                 isExecutedSelectTicket = true;
                 initPanels();
-                tmlog("進入選擇票價頁面，準備就緒。點擊「開始」自動循環檢查。");
+                syncPriorityPricesForCurrentActivity(true);
+                tmlog('進入選擇票價頁面，準備就緒。點擊「開始」自動循環檢查。');
             }
         }
 
-        // 2. 處理 /confirmOrder (確認訂單頁面)
         if (url.includes('/confirmOrder')) {
             const agreementIcon = document.querySelector('span[class*="agreementIcon___"]');
             if (agreementIcon && !isExecutedConfirmOrder) {
                 isExecutedConfirmOrder = true;
-
-                // 異步等待 React Hydration 完畢才點擊
                 setTimeout(() => {
                     const latestIcon = document.querySelector('span[class*="agreementIcon___"]');
                     if (latestIcon && latestIcon.innerHTML.includes('#icon-weixuanzhong')) {
                         if (document.getElementById('tm-log-panel')) {
-                            tmlog("[成功] 搵到條款同意選項(未選中)，準備點擊。");
+                            tmlog('[成功] 搵到條款同意選項(未選中)，準備點擊。');
                         } else {
-                            console.log("[成功] 搵到條款同意選項(未選中)，準備點擊。");
+                            console.log('[成功] 搵到條款同意選項(未選中)，準備點擊。');
                         }
                         simulateClick(latestIcon);
                     }
@@ -848,7 +909,5 @@
         }
     });
 
-    // 開始監聽 body
     observer.observe(document.body, { childList: true, subtree: true });
-
 })();
