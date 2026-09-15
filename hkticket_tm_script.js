@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         HKTicketing Auto Select & Confirm
 // @namespace    http://tampermonkey.net/
-// @version      1.7
-// @description  自動處理購票須知及立即購買、選擇 hkticketing 場次、票價、增加數量；票價選項按 activityId 保存 48 小時，Panel 支援 Pointer Events 拖動及 mobile 預設最小化
+// @version      1.8
+// @description  自動處理購票須知及立即購買、選擇 hkticketing 場次、票價、增加數量；票價選項按 activityId 保存 48 小時，Panel 支援 Pointer Events 拖動/縮放及 mobile 預設最小化
 // @author       You
 // @match        *://*.hkticketing.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hkticketing.com
@@ -15,6 +15,10 @@
     const PRIORITY_PRICE_STORAGE_PREFIX = 'tm_priority_prices_v2_';
     const PRIORITY_PRICE_TTL_MS = 48 * 60 * 60 * 1000;
     const LEGACY_PRIORITY_PRICE_KEY = 'tm_priority_prices';
+    const PANEL_LAYOUT_KEY_PREFIX = 'tm_panel_layout_v1_';
+    const PANEL_MARGIN = 8;
+    const PANEL_MIN_WIDTH = 200;
+    const PANEL_MIN_HEIGHT = 140;
 
     function loadStoredJson(key, fallback) {
         try {
@@ -140,7 +144,6 @@
         return savedAt ? savedAt + PRIORITY_PRICE_TTL_MS : Infinity;
     }
 
-    // 舊版全站共用同一個 key，無法判斷屬於邊個 show；升級後清走避免污染其他 activity。
     localStorage.removeItem(LEGACY_PRIORITY_PRICE_KEY);
     cleanupExpiredPriorityPriceStorage();
 
@@ -361,9 +364,6 @@
         }
     }
 
-    const PANEL_LAYOUT_KEY_PREFIX = 'tm_panel_layout_v1_';
-    const PANEL_MARGIN = 8;
-
     function getPanelLayoutKey(el) {
         return PANEL_LAYOUT_KEY_PREFIX + el.id;
     }
@@ -376,30 +376,45 @@
         return uaMobile || (coarsePointer && touchPoints && shortSide <= 1024);
     }
 
+    function getViewportSize() {
+        return {
+            width: Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0),
+            height: Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0)
+        };
+    }
+
     function clampPanelLayout(layout) {
-        const viewportWidth = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
-        const viewportHeight = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
-        const maxWidth = Math.max(200, viewportWidth - PANEL_MARGIN * 2);
-        const maxHeight = Math.max(140, viewportHeight - PANEL_MARGIN * 2);
-        const width = Math.min(Math.max(Number(layout.width) || 200, 200), maxWidth);
-        const height = Math.min(Math.max(Number(layout.height) || 140, 140), maxHeight);
-        const maxLeft = Math.max(PANEL_MARGIN, viewportWidth - width - PANEL_MARGIN);
-        const maxTop = Math.max(PANEL_MARGIN, viewportHeight - height - PANEL_MARGIN);
+        const viewport = getViewportSize();
+        const maxWidth = Math.max(PANEL_MIN_WIDTH, viewport.width - PANEL_MARGIN * 2);
+        const maxHeight = Math.max(PANEL_MIN_HEIGHT, viewport.height - PANEL_MARGIN * 2);
+        const width = Math.min(Math.max(Number(layout.width) || PANEL_MIN_WIDTH, PANEL_MIN_WIDTH), maxWidth);
+        const height = Math.min(Math.max(Number(layout.height) || PANEL_MIN_HEIGHT, PANEL_MIN_HEIGHT), maxHeight);
+        const maxLeft = Math.max(PANEL_MARGIN, viewport.width - width - PANEL_MARGIN);
+        const maxTop = Math.max(PANEL_MARGIN, viewport.height - height - PANEL_MARGIN);
         const left = Math.min(Math.max(Number(layout.left) || PANEL_MARGIN, PANEL_MARGIN), maxLeft);
         const top = Math.min(Math.max(Number(layout.top) || PANEL_MARGIN, PANEL_MARGIN), maxTop);
         return { left, top, width, height };
     }
 
     function clampPanelPosition(left, top, width, height) {
-        const viewportWidth = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
-        const viewportHeight = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
+        const viewport = getViewportSize();
         const safeWidth = Math.max(0, Number(width) || 0);
         const safeHeight = Math.max(0, Number(height) || 0);
-        const maxLeft = Math.max(PANEL_MARGIN, viewportWidth - safeWidth - PANEL_MARGIN);
-        const maxTop = Math.max(PANEL_MARGIN, viewportHeight - safeHeight - PANEL_MARGIN);
+        const maxLeft = Math.max(PANEL_MARGIN, viewport.width - safeWidth - PANEL_MARGIN);
+        const maxTop = Math.max(PANEL_MARGIN, viewport.height - safeHeight - PANEL_MARGIN);
         return {
             left: Math.min(Math.max(Number(left) || PANEL_MARGIN, PANEL_MARGIN), maxLeft),
             top: Math.min(Math.max(Number(top) || PANEL_MARGIN, PANEL_MARGIN), maxTop)
+        };
+    }
+
+    function clampPanelSizeFromTopLeft(left, top, width, height) {
+        const viewport = getViewportSize();
+        const maxWidth = Math.max(PANEL_MIN_WIDTH, viewport.width - Number(left) - PANEL_MARGIN);
+        const maxHeight = Math.max(PANEL_MIN_HEIGHT, viewport.height - Number(top) - PANEL_MARGIN);
+        return {
+            width: Math.min(Math.max(Number(width) || PANEL_MIN_WIDTH, PANEL_MIN_WIDTH), maxWidth),
+            height: Math.min(Math.max(Number(height) || PANEL_MIN_HEIGHT, PANEL_MIN_HEIGHT), maxHeight)
         };
     }
 
@@ -412,9 +427,9 @@
     }
 
     function restorePanelLayout(el, defaults) {
-        const viewportWidth = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+        const viewport = getViewportSize();
         const defaultLayout = {
-            left: defaults.left ?? Math.max(PANEL_MARGIN, viewportWidth - defaults.width - (defaults.right ?? 20)),
+            left: defaults.left ?? Math.max(PANEL_MARGIN, viewport.width - defaults.width - (defaults.right ?? 20)),
             top: defaults.top,
             width: defaults.width,
             height: defaults.height
@@ -461,7 +476,7 @@
                     header.releasePointerCapture(activePointerId);
                 }
             } catch (err) {
-                // Pointer capture may already be released after pointercancel/lostpointercapture.
+                // pointer capture may already be released
             }
 
             activePointerId = null;
@@ -482,7 +497,7 @@
             try {
                 header.setPointerCapture(e.pointerId);
             } catch (err) {
-                // Pointer capture is best-effort; pointer events still work without it.
+                // best effort
             }
         });
 
@@ -509,9 +524,92 @@
         });
     }
 
+    function makeResizable(el) {
+        if (!el || el.querySelector('.tm-resize-handle')) return;
+
+        const handle = document.createElement('div');
+        handle.className = 'tm-resize-handle';
+        handle.title = '拖動調整大小';
+        handle.setAttribute('role', 'button');
+        handle.setAttribute('aria-label', '拖動調整 panel 大小');
+        el.appendChild(handle);
+
+        let activePointerId = null;
+        let startX = 0;
+        let startY = 0;
+        let startWidth = 0;
+        let startHeight = 0;
+        let startLeft = 0;
+        let startTop = 0;
+
+        const finishResize = (e) => {
+            if (activePointerId === null) return;
+            if (e && typeof e.pointerId === 'number' && e.pointerId !== activePointerId) return;
+
+            try {
+                if (typeof handle.hasPointerCapture === 'function' && handle.hasPointerCapture(activePointerId)) {
+                    handle.releasePointerCapture(activePointerId);
+                }
+            } catch (err) {
+                // pointer capture may already be released
+            }
+
+            activePointerId = null;
+            el.classList.remove('tm-resizing');
+            savePanelLayout(el);
+        };
+
+        handle.addEventListener('pointerdown', (e) => {
+            if (el.classList.contains('tm-minimized')) return;
+            if (e.pointerType === 'mouse' && e.button !== 0) return;
+
+            const rect = el.getBoundingClientRect();
+            activePointerId = e.pointerId;
+            startX = e.clientX;
+            startY = e.clientY;
+            startWidth = rect.width;
+            startHeight = rect.height;
+            startLeft = rect.left;
+            startTop = rect.top;
+            el.classList.add('tm-resizing');
+
+            e.preventDefault();
+            e.stopPropagation();
+
+            try {
+                handle.setPointerCapture(e.pointerId);
+            } catch (err) {
+                // best effort
+            }
+        });
+
+        handle.addEventListener('pointermove', (e) => {
+            if (activePointerId === null || e.pointerId !== activePointerId) return;
+            e.preventDefault();
+            e.stopPropagation();
+
+            const next = clampPanelSizeFromTopLeft(
+                startLeft,
+                startTop,
+                startWidth + (e.clientX - startX),
+                startHeight + (e.clientY - startY)
+            );
+            el.style.width = `${next.width}px`;
+            el.style.height = `${next.height}px`;
+        });
+
+        handle.addEventListener('pointerup', finishResize);
+        handle.addEventListener('pointercancel', finishResize);
+        handle.addEventListener('lostpointercapture', (e) => {
+            if (activePointerId !== null && e.pointerId === activePointerId) finishResize(e);
+        });
+    }
+
     function setupPersistentPanel(el, defaults) {
         restorePanelLayout(el, defaults);
         makeDraggable(el);
+        makeResizable(el);
+
         if (typeof ResizeObserver !== 'undefined') {
             let resizeTimer = null;
             const resizeObserver = new ResizeObserver(() => {
@@ -520,6 +618,7 @@
             });
             resizeObserver.observe(el);
         }
+
         window.addEventListener('resize', () => {
             const rect = el.getBoundingClientRect();
 
@@ -544,22 +643,27 @@
             const style = document.createElement('style');
             style.id = 'tm-style';
             style.textContent = `
-                .tm-panel { position: fixed; z-index: 999999; background: #222; color: #fff; border: 1px solid #555; border-radius: 5px; opacity: 0.4; transition: opacity 0.3s; font-family: sans-serif; resize: both; overflow: hidden; display: flex; flex-direction: column; min-width: 200px; min-height: 140px; box-sizing: border-box; }
+                .tm-panel { position: fixed; z-index: 999999; background: #222; color: #fff; border: 1px solid #555; border-radius: 5px; opacity: 0.4; transition: opacity 0.3s; font-family: sans-serif; resize: none; overflow: hidden; display: flex; flex-direction: column; min-width: ${PANEL_MIN_WIDTH}px; min-height: ${PANEL_MIN_HEIGHT}px; box-sizing: border-box; }
                 .tm-panel:hover { opacity: 1.0 !important; }
                 .tm-panel.tm-minimized { height: auto !important; min-height: 0 !important; resize: none; }
-                .tm-panel.tm-minimized .tm-content { display: none !important; }
+                .tm-panel.tm-minimized .tm-content, .tm-panel.tm-minimized .tm-resize-handle { display: none !important; }
                 .tm-header { padding: 5px 10px; background: #333; cursor: move; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #555; border-radius: 5px 5px 0 0; flex-shrink: 0; user-select: none; touch-action: none; }
                 .tm-header.tm-dragging { cursor: grabbing; }
+                .tm-header-btns { display:flex; align-items:center; }
                 .tm-header-btns span { cursor: pointer; margin-left: 8px; color: #aaa; touch-action: manipulation; }
                 .tm-header-btns span:hover { color: #fff; }
-                .tm-content { padding: 10px; font-size: 13px; flex: 1; min-height: 0; overflow: auto; box-sizing: border-box; width: 100%; }
+                .tm-min-btn { display:inline-flex; align-items:center; justify-content:center; min-width:28px; min-height:28px; padding:0 5px; box-sizing:border-box; line-height:1; border-radius:4px; }
+                .tm-panel.tm-minimized .tm-min-btn { min-width:42px; min-height:42px; font-size:30px; font-weight:700; color:#fff; }
+                .tm-resize-handle { position:absolute; right:0; bottom:0; width:38px; height:38px; z-index:20; cursor:nwse-resize; touch-action:none; user-select:none; -webkit-user-select:none; }
+                .tm-resize-handle::after { content:'↘'; position:absolute; right:5px; bottom:2px; font-size:25px; line-height:1; color:#ddd; text-shadow:0 1px 2px #000; pointer-events:none; }
+                .tm-panel.tm-resizing { opacity:1 !important; }
+                .tm-content { padding: 10px 10px 34px 10px; font-size: 13px; flex: 1; min-height: 0; overflow: auto; box-sizing: border-box; width: 100%; }
                 #tm-log-content { color: #0f0; line-height: 1.4; word-wrap: break-word; }
                 #tm-log-content div { margin-bottom: 4px; border-bottom: 1px solid #333; padding-bottom: 2px; }
                 #tm-control-content { display: flex; flex-direction: column; overflow: hidden; gap: 6px; }
                 #tm-date-list-container { flex: 0 1 auto; max-height: 28%; overflow-y: auto; background: #333; padding: 4px; border: 1px solid #555; border-radius: 4px; }
                 #tm-priority-list-container { flex: 1 1 auto; min-height: 80px; overflow-y: auto; background: #333; padding: 4px; border: 1px solid #555; border-radius: 4px; }
                 .tm-control-fields { flex-shrink: 0; }
-                .tm-hidden { display: none !important; }
                 #tm-start-btn { width: 100%; padding: 8px; background: #007bff; border: none; border-radius: 4px; cursor: pointer; color: white; font-weight: bold; }
                 #tm-start-btn:hover { background: #0056b3; }
             `;
