@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         HKTicketing Auto Select & Confirm
 // @namespace    http://tampermonkey.net/
-// @version      1.10
-// @description  自動處理購票須知及立即購買、選擇 hkticketing 場次、票價、增加數量；支援多日期輪詢、票價選項按 activityId 保存 48 小時、Panel Pointer Events 拖動/縮放及付款頁自動填入卡 BIN
+// @version      1.11
+// @description  自動處理購票須知及立即購買、選擇 hkticketing 場次、票價、增加數量；支援多日期輪詢、票價選項按 activityId 保存 48 小時、Panel Pointer Events 拖動/縮放、付款頁自動填入卡 BIN，並修正繁忙視窗可見性判斷
 // @author       You
 // @match        *://*.hkticketing.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hkticketing.com
@@ -935,7 +935,7 @@
         fillCashierCardBinIfNeeded();
 
         const busyModalBtn = document.querySelector('.baxia-dialog-close');
-        if (busyModalBtn && busyModalBtn.style.display !== 'none' && isRunning) {
+        if (busyModalBtn && isElementVisible(busyModalBtn) && isRunning) {
             if (document.getElementById('tm-log-panel')) tmlog('檢測到繁忙視窗，排隊等待解除...');
         }
 
@@ -999,7 +999,7 @@
             syncPriorityPricesForCurrentActivity();
 
             const busyModalBtn = document.querySelector('.baxia-dialog-close');
-            if (busyModalBtn && busyModalBtn.style.display !== 'none') {
+            if (busyModalBtn && isElementVisible(busyModalBtn)) {
                 tmlog('檢測到繁忙視窗，暫停1秒後繼續...');
                 await sleep(1000);
                 continue;
