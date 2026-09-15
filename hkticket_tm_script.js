@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         HKTicketing Auto Select & Confirm
 // @namespace    http://tampermonkey.net/
-// @version      1.4
-// @description  自動處理購票須知、選擇 hkticketing 場次、票價、增加數量，並記住 Log/Control Panel 的位置及尺寸
+// @version      1.5
+// @description  自動處理購票須知及立即購買、選擇 hkticketing 場次、票價、增加數量，並記住 Log/Control Panel 的位置及尺寸
 // @author       You
 // @match        *://*.hkticketing.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hkticketing.com
@@ -104,6 +104,48 @@
         element.dispatchEvent(new MouseEvent('click', options));
     }
 
+    function isElementVisible(element) {
+        if (!element || !document.documentElement.contains(element)) return false;
+        const style = window.getComputedStyle(element);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    }
+
+    function isButtonEnabled(button) {
+        if (!button) return false;
+        const ariaDisabled = button.getAttribute('aria-disabled');
+        const className = typeof button.className === 'string' ? button.className.toLowerCase() : '';
+        return !button.disabled &&
+            ariaDisabled !== 'true' &&
+            !className.includes('disabled') &&
+            !className.includes('disable') &&
+            isElementVisible(button);
+    }
+
+    async function clickEnabledBuyNow(maxWaitMs = 4000) {
+        const interval = 100;
+        const maxRetries = Math.ceil(maxWaitMs / interval);
+
+        for (let i = 0; i < maxRetries; i++) {
+            const buyNowButtons = Array.from(document.querySelectorAll('button[class*="buyNowBtn___"], button'));
+            const buyNowBtn = buyNowButtons.find(btn =>
+                btn.innerText.trim() === '立即購買' && isButtonEnabled(btn)
+            );
+
+            if (buyNowBtn) {
+                simulateClick(buyNowBtn);
+                tmlog('[成功] 「立即購買」已 enable，自動點擊。');
+                return true;
+            }
+
+            await sleep(interval);
+        }
+
+        tmlog('[等待] 按完「知悉並同意」後未見到可點擊的「立即購買」。');
+        return false;
+    }
+
     // 自動處理「購票須知」：先捲到底，觸發 scroll，再按「知悉並同意」
     let isHandlingTicketDisclaimer = false;
 
@@ -155,6 +197,14 @@
                     modal.dataset.tmDisclaimerHandled = '1';
                     simulateClick(agreeBtn);
                     tmlog('[成功] 已捲到購票須知底部並點擊「知悉並同意」');
+
+                    // 等彈窗關閉／React 狀態更新，再按已 enable 的「立即購買」。
+                    for (let j = 0; j < 15; j++) {
+                        const modalStillVisible = document.documentElement.contains(modal) && isElementVisible(modal);
+                        if (!modalStillVisible) break;
+                        await sleep(100);
+                    }
+                    await clickEnabledBuyNow(4000);
                     return true;
                 }
                 await sleep(200);
