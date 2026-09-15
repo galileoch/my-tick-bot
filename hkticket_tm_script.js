@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         HKTicketing Auto Select & Confirm
 // @namespace    http://tampermonkey.net/
-// @version      1.2
-// @description  自動選擇 hkticketing 場次、票價、增加數量，並以輪詢及延遲等待確保點擊成功 (新增Log與Control Panel)
+// @version      1.3
+// @description  自動處理購票須知、選擇 hkticketing 場次、票價、增加數量，並以輪詢及延遲等待確保點擊成功 (新增Log與Control Panel)
 // @author       You
 // @match        *://*.hkticketing.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hkticketing.com
@@ -102,6 +102,69 @@
         element.dispatchEvent(new MouseEvent('mousedown', options));
         element.dispatchEvent(new MouseEvent('mouseup', options));
         element.dispatchEvent(new MouseEvent('click', options));
+    }
+
+    // 自動處理「購票須知」：先捲到底，觸發 scroll，再按「知悉並同意」
+    let isHandlingTicketDisclaimer = false;
+
+    async function handleTicketDisclaimer() {
+        if (isHandlingTicketDisclaimer) return false;
+
+        let modal = null;
+        const modals = document.querySelectorAll('.bui-modal');
+        for (const candidate of modals) {
+            const title = candidate.querySelector('.modalAndDrawerTitle, [class*="title___"]');
+            if (title && title.innerText.includes('購票須知')) {
+                modal = candidate;
+                break;
+            }
+        }
+
+        if (!modal || modal.dataset.tmDisclaimerHandled === '1') return false;
+
+        const scrollContainer = modal.querySelector('.bui-scroll.bui-scroll-view-scroll-y, .bui-scroll-view-scroll-y');
+        const getAgreeButton = () => Array.from(modal.querySelectorAll('.modalAndDrawerFooter button, button'))
+            .find(btn => btn.innerText.trim().includes('知悉並同意'));
+
+        if (!scrollContainer || !getAgreeButton()) return false;
+
+        isHandlingTicketDisclaimer = true;
+        try {
+            tmlog('檢測到「購票須知」，自動捲動到最底閱讀...');
+
+            const scrollToEnd = () => {
+                const bottom = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+                if (typeof scrollContainer.scrollTo === 'function') {
+                    scrollContainer.scrollTo({ top: bottom, behavior: 'auto' });
+                } else {
+                    scrollContainer.scrollTop = bottom;
+                }
+                // 再直接設一次，避免部分瀏覽器 / 元件 scrollTo 未完全到底。
+                scrollContainer.scrollTop = scrollContainer.scrollHeight;
+                scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
+            };
+
+            scrollToEnd();
+            await sleep(300);
+
+            // 某些頁面會等 scroll 事件後才 enable 按鈕，最多重試約 2 秒。
+            for (let i = 0; i < 10; i++) {
+                scrollToEnd();
+                const agreeBtn = getAgreeButton();
+                if (agreeBtn && !agreeBtn.disabled && agreeBtn.getAttribute('aria-disabled') !== 'true') {
+                    modal.dataset.tmDisclaimerHandled = '1';
+                    simulateClick(agreeBtn);
+                    tmlog('[成功] 已捲到購票須知底部並點擊「知悉並同意」');
+                    return true;
+                }
+                await sleep(200);
+            }
+
+            tmlog('[等待] 「知悉並同意」仍未可點擊，稍後再試。');
+            return false;
+        } finally {
+            isHandlingTicketDisclaimer = false;
+        }
     }
 
     function makeDraggable(el) {
@@ -334,6 +397,9 @@
 
     // 獨立運行的背景監控迴圈 (處理突發彈窗)
     setInterval(() => {
+        // 0. 自動處理詳情頁 / 購票流程出現的「購票須知」彈窗
+        handleTicketDisclaimer();
+
         // 1. 遇到繁忙視窗時記錄日誌 (暫停1秒繼續邏輯已移至 runAutoRefresh)
         const busyModalBtn = document.querySelector('.baxia-dialog-close');
         if (busyModalBtn && busyModalBtn.style.display !== 'none') {
