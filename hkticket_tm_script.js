@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         HKTicketing Auto Select & Confirm
 // @namespace    http://tampermonkey.net/
-// @version      1.9
-// @description  自動處理購票須知及立即購買、選擇 hkticketing 場次、票價、增加數量；票價選項按 activityId 保存 48 小時，Panel 支援 Pointer Events 拖動/縮放及 mobile 預設最小化，付款頁自動填入卡 BIN
+// @version      1.10
+// @description  自動處理購票須知及立即購買、選擇 hkticketing 場次、票價、增加數量；支援多日期輪詢、票價選項按 activityId 保存 48 小時、Panel Pointer Events 拖動/縮放及付款頁自動填入卡 BIN
 // @author       You
 // @match        *://*.hkticketing.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hkticketing.com
@@ -15,6 +15,8 @@
     const PRIORITY_PRICE_STORAGE_PREFIX = 'tm_priority_prices_v2_';
     const PRIORITY_PRICE_TTL_MS = 48 * 60 * 60 * 1000;
     const LEGACY_PRIORITY_PRICE_KEY = 'tm_priority_prices';
+    const TARGET_DATES_STORAGE_KEY = 'tm_target_dates';
+    const LEGACY_TARGET_DATE_KEY = 'tm_target_date';
     const PANEL_LAYOUT_KEY_PREFIX = 'tm_panel_layout_v1_';
     const PANEL_MARGIN = 8;
     const PANEL_MIN_WIDTH = 200;
@@ -29,6 +31,18 @@
         } catch (e) {
             return fallback;
         }
+    }
+
+    function loadTargetDates() {
+        const stored = loadStoredJson(TARGET_DATES_STORAGE_KEY, null);
+        if (Array.isArray(stored)) {
+            return Array.from(new Set(stored
+                .filter(value => typeof value === 'string' && value.trim())
+                .map(value => value.trim())));
+        }
+
+        const legacyDate = localStorage.getItem(LEGACY_TARGET_DATE_KEY);
+        return legacyDate && legacyDate.trim() ? [legacyDate.trim()] : [];
     }
 
     function findActivityIdInObject(value, depth = 0, seen = new WeakSet()) {
@@ -152,7 +166,7 @@
     let activePriorityExpiryAt = getPriorityPriceExpiryAt(activePriorityActivityId);
 
     const CONFIG = {
-        targetDate: localStorage.getItem('tm_target_date') || '7月10日',
+        targetDates: loadTargetDates(),
         priorityPrices: Array.isArray(storedPriorityPrices) ? storedPriorityPrices : [],
         targetQuantity: 2,
         privilegeCode: localStorage.getItem('tm_privilege_code') || '123456',
@@ -207,8 +221,17 @@
         return true;
     }
 
-    function saveTargetDate() {
-        localStorage.setItem('tm_target_date', CONFIG.targetDate);
+    function saveTargetDates() {
+        CONFIG.targetDates = Array.from(new Set((CONFIG.targetDates || [])
+            .filter(value => typeof value === 'string' && value.trim())
+            .map(value => value.trim())));
+        localStorage.setItem(TARGET_DATES_STORAGE_KEY, JSON.stringify(CONFIG.targetDates));
+
+        if (CONFIG.targetDates.length > 0) {
+            localStorage.setItem(LEGACY_TARGET_DATE_KEY, CONFIG.targetDates[0]);
+        } else {
+            localStorage.removeItem(LEGACY_TARGET_DATE_KEY);
+        }
     }
 
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -771,7 +794,7 @@
                 <div class="tm-header"><span>Control Panel</span><div class="tm-header-btns"><span class="tm-min-btn">──</span></div></div>
                 <div id="tm-control-content" class="tm-content">
                     <div id="tm-date-list-container">
-                        <label style="display:block; font-size:12px; color:#ccc;">目標日期 (單選):</label>
+                        <label style="display:block; font-size:12px; color:#ccc;">目標日期 (多選):</label>
                         <div style="color:#aaa; font-size:12px;">等待加載日期...</div>
                     </div>
                     <div id="tm-priority-list-container">
@@ -826,7 +849,7 @@
                     isRunning = true;
                     this.innerText = '停止';
                     this.style.background = '#dc3545';
-                    tmlog('啟動自動點擊循環！');
+                    tmlog(`啟動自動點擊循環！目標日期：${CONFIG.targetDates.length > 0 ? CONFIG.targetDates.join('、') : '未選擇'}`);
                     runAutoRefresh();
                 }
             };
@@ -840,31 +863,33 @@
     function updateDateUI(availableOptions) {
         const container = document.getElementById('tm-date-list-container');
         if (!container) return;
-        let html = '<label style="display:block; font-size:12px; color:#ccc;">目標日期 (單選):</label>';
-        if (availableOptions.length === 0) {
+
+        const normalizedOptions = Array.from(new Set((availableOptions || []).filter(Boolean)));
+        CONFIG.targetDates = (CONFIG.targetDates || []).filter(date => normalizedOptions.includes(date));
+        if (CONFIG.targetDates.length === 0 && normalizedOptions.length > 0) {
+            CONFIG.targetDates = [normalizedOptions[0]];
+        }
+        saveTargetDates();
+
+        let html = '<label style="display:block; font-size:12px; color:#ccc;">目標日期 (多選):</label>';
+        if (normalizedOptions.length === 0) {
             html += '<div style="color:#aaa; font-size:12px;">等待加載日期...</div>';
         } else {
-            if (availableOptions.length === 1) {
-                CONFIG.targetDate = availableOptions[0];
-                saveTargetDate();
-            }
-            availableOptions.forEach((opt, i) => {
-                if (CONFIG.targetDate === '7月10日' && i === 0) {
-                    CONFIG.targetDate = opt;
-                    saveTargetDate();
-                }
-                const isChecked = CONFIG.targetDate === opt ? 'checked' : '';
+            normalizedOptions.forEach((opt) => {
+                const isChecked = CONFIG.targetDates.includes(opt) ? 'checked' : '';
                 html += `<label style="display:block; font-size:12px; margin-bottom:2px; cursor:pointer; color:#fff;">
-                            <input type="radio" name="tm-date-radio" value="${opt}" ${isChecked} style="margin-right:6px;">${opt}
+                            <input type="checkbox" class="tm-date-chk" value="${opt}" ${isChecked} style="margin-right:6px;">${opt}
                          </label>`;
             });
         }
         container.innerHTML = html;
-        container.querySelectorAll('input[name="tm-date-radio"]').forEach(radio => {
-            radio.addEventListener('change', (e) => {
-                CONFIG.targetDate = e.target.value;
-                saveTargetDate();
-                tmlog(`已更新目標日期為: ${CONFIG.targetDate}`);
+        container.querySelectorAll('.tm-date-chk').forEach(chk => {
+            chk.addEventListener('change', () => {
+                CONFIG.targetDates = Array.from(container.querySelectorAll('.tm-date-chk:checked')).map(input => input.value);
+                saveTargetDates();
+                tmlog(CONFIG.targetDates.length > 0
+                    ? `已更新目標日期為多選：${CONFIG.targetDates.join('、')}`
+                    : '已取消所有目標日期；開始後會停止輪詢，直到重新選擇日期。');
             });
         });
     }
@@ -968,6 +993,8 @@
     }, 400);
 
     async function runAutoRefresh() {
+        let dateLoopIndex = 0;
+
         while (isRunning) {
             syncPriorityPricesForCurrentActivity();
 
@@ -978,38 +1005,54 @@
                 continue;
             }
 
-            let targetEl = null;
-            let altEl = null;
             const sessions = document.querySelectorAll('div[class*="session"]');
             const dateButtons = [];
             for (const el of sessions) {
                 if (el.querySelector('div[class*="session"]')) continue;
                 if (el.innerText.includes('年') && el.innerText.includes('月')) {
                     dateButtons.push(el);
-                    if (el.innerText.includes(CONFIG.targetDate)) targetEl = el;
-                    else altEl = el;
                 }
             }
 
-            if (dateButtons.length === 1) {
-                targetEl = dateButtons[0];
-                altEl = null;
+            const selectedDates = (CONFIG.targetDates || []).filter(date =>
+                dateButtons.some(el => el.innerText.includes(date))
+            );
+
+            if (selectedDates.length === 0) {
+                tmlog('[警告] 未選擇任何目前可用的目標日期！請先停用並在 Control Panel 勾選至少一個日期。');
+                isRunning = false;
+                const btn = document.getElementById('tm-start-btn');
+                if (btn) {
+                    btn.innerText = '開始';
+                    btn.style.background = '#007bff';
+                }
+                return;
             }
 
-            if (targetEl) {
-                if ((targetEl.className.includes('fouceStyle') || targetEl.className.includes('focusStyle')) && altEl) {
-                    tmlog('該日期正處於選中狀態，先點擊其他日子作強制刷新...');
-                    simulateClick(altEl);
-                    await sleep(400);
-                }
-                simulateClick(targetEl);
-                tmlog(`點擊目標日期: ${CONFIG.targetDate}`);
-                await sleep(CONFIG.refreshInterval);
-            } else {
-                tmlog(`未找到目標日期: ${CONFIG.targetDate}`);
+            if (dateLoopIndex >= selectedDates.length) dateLoopIndex = 0;
+            const targetIndex = dateLoopIndex;
+            const currentTargetDate = selectedDates[targetIndex];
+            dateLoopIndex = (dateLoopIndex + 1) % selectedDates.length;
+
+            const targetEl = dateButtons.find(el => el.innerText.includes(currentTargetDate));
+            const altEl = dateButtons.find(el => !el.innerText.includes(currentTargetDate)) || null;
+
+            if (!targetEl) {
+                tmlog(`[等待] 未找到目標日期: ${currentTargetDate}，切換下一個日期...`);
                 await sleep(CONFIG.refreshInterval);
                 continue;
             }
+
+            const targetAlreadySelected = targetEl.className.includes('fouceStyle') || targetEl.className.includes('focusStyle');
+            if (selectedDates.length === 1 && targetAlreadySelected && altEl) {
+                tmlog(`唯一目標日期 ${currentTargetDate} 正處於選中狀態，先點擊其他日子作強制刷新...`);
+                simulateClick(altEl);
+                await sleep(Math.min(400, Math.max(100, CONFIG.refreshInterval)));
+            }
+
+            simulateClick(targetEl);
+            tmlog(`輪詢日期 [${targetIndex + 1}/${selectedDates.length}]：${currentTargetDate}，等待票價更新...`);
+            await sleep(CONFIG.refreshInterval);
 
             let foundPrice = null;
             const isSingleDate = dateButtons.length === 1;
@@ -1053,8 +1096,8 @@
             if (foundPrice) {
                 const priceName = getPriceLabel(foundPrice);
                 tmlog(CONFIG.priorityPrices.length > 0
-                    ? `[成功] 按照 Priority List 找到可用票種: ${priceName}`
-                    : `[成功] 單日場次，自動選擇可提供票價: ${priceName}`);
+                    ? `[成功] ${currentTargetDate} 找到 Priority List 可用票種: ${priceName}`
+                    : `[成功] ${currentTargetDate} 自動選擇可提供票價: ${priceName}`);
                 isRunning = false;
                 const btn = document.getElementById('tm-start-btn');
                 if (btn) {
@@ -1065,8 +1108,7 @@
                 return;
             }
 
-            tmlog('[等待] 未出現可選目標票價，暫停1秒後繼續...');
-            await sleep(1000);
+            tmlog(`[等待] ${currentTargetDate} 未出現可選目標票價，切換下一個已勾選日期...`);
         }
     }
 
@@ -1145,7 +1187,7 @@
                 isExecutedSelectTicket = true;
                 initPanels();
                 syncPriorityPricesForCurrentActivity(true);
-                tmlog('進入選擇票價頁面，準備就緒。點擊「開始」自動循環檢查。');
+                tmlog('進入選擇票價頁面，準備就緒。點擊「開始」後會循環檢查所有已勾選日期。');
             }
         }
 
