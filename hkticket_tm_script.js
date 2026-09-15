@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         HKTicketing Auto Select & Confirm
 // @namespace    http://tampermonkey.net/
-// @version      1.3
-// @description  自動處理購票須知、選擇 hkticketing 場次、票價、增加數量，並以輪詢及延遲等待確保點擊成功 (新增Log與Control Panel)
+// @version      1.4
+// @description  自動處理購票須知、選擇 hkticketing 場次、票價、增加數量，並記住 Log/Control Panel 的位置及尺寸
 // @author       You
 // @match        *://*.hkticketing.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hkticketing.com
@@ -167,11 +167,78 @@
         }
     }
 
+    // ==========================================
+    // Panel 位置 / 尺寸持久化
+    // ==========================================
+    const PANEL_LAYOUT_KEY_PREFIX = 'tm_panel_layout_v1_';
+    const PANEL_MARGIN = 8;
+
+    function getPanelLayoutKey(el) {
+        return PANEL_LAYOUT_KEY_PREFIX + el.id;
+    }
+
+    function clampPanelLayout(layout) {
+        const viewportWidth = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+        const viewportHeight = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
+        const maxWidth = Math.max(200, viewportWidth - PANEL_MARGIN * 2);
+        const maxHeight = Math.max(140, viewportHeight - PANEL_MARGIN * 2);
+
+        const width = Math.min(Math.max(Number(layout.width) || 200, 200), maxWidth);
+        const height = Math.min(Math.max(Number(layout.height) || 140, 140), maxHeight);
+        const maxLeft = Math.max(PANEL_MARGIN, viewportWidth - width - PANEL_MARGIN);
+        const maxTop = Math.max(PANEL_MARGIN, viewportHeight - height - PANEL_MARGIN);
+        const left = Math.min(Math.max(Number(layout.left) || PANEL_MARGIN, PANEL_MARGIN), maxLeft);
+        const top = Math.min(Math.max(Number(layout.top) || PANEL_MARGIN, PANEL_MARGIN), maxTop);
+
+        return { left, top, width, height };
+    }
+
+    function savePanelLayout(el) {
+        if (!el || !el.id) return;
+        const rect = el.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+
+        const layout = clampPanelLayout({
+            left: rect.left,
+            top: rect.top,
+            width: rect.width,
+            height: rect.height
+        });
+
+        localStorage.setItem(getPanelLayoutKey(el), JSON.stringify(layout));
+    }
+
+    function restorePanelLayout(el, defaults) {
+        const viewportWidth = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+        const defaultLayout = {
+            left: defaults.left ?? Math.max(PANEL_MARGIN, viewportWidth - defaults.width - (defaults.right ?? 20)),
+            top: defaults.top,
+            width: defaults.width,
+            height: defaults.height
+        };
+
+        let stored = null;
+        try {
+            stored = JSON.parse(localStorage.getItem(getPanelLayoutKey(el)) || 'null');
+        } catch (e) {
+            stored = null;
+        }
+
+        const layout = clampPanelLayout(stored && typeof stored === 'object' ? stored : defaultLayout);
+        el.style.right = 'auto';
+        el.style.left = `${layout.left}px`;
+        el.style.top = `${layout.top}px`;
+        el.style.width = `${layout.width}px`;
+        el.style.height = `${layout.height}px`;
+    }
+
     function makeDraggable(el) {
         const header = el.querySelector('.tm-header');
         let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
 
         header.onmousedown = function (e) {
+            // 按最小化掣時唔啟動拖曳
+            if (e.target.closest('.tm-header-btns')) return;
             e.preventDefault();
             pos3 = e.clientX;
             pos4 = e.clientY;
@@ -185,14 +252,53 @@
             pos2 = pos4 - e.clientY;
             pos3 = e.clientX;
             pos4 = e.clientY;
-            el.style.top = (el.offsetTop - pos2) + "px";
-            el.style.left = (el.offsetLeft - pos1) + "px";
+
+            const next = clampPanelLayout({
+                left: el.offsetLeft - pos1,
+                top: el.offsetTop - pos2,
+                width: el.offsetWidth,
+                height: el.offsetHeight
+            });
+            el.style.left = `${next.left}px`;
+            el.style.top = `${next.top}px`;
         }
 
         function closeDragElement() {
             document.onmouseup = null;
             document.onmousemove = null;
+            savePanelLayout(el);
         }
+    }
+
+    function setupPersistentPanel(el, defaults) {
+        restorePanelLayout(el, defaults);
+        makeDraggable(el);
+
+        // native CSS resize 完成後自動記住 width / height。
+        if (typeof ResizeObserver !== 'undefined') {
+            let resizeTimer = null;
+            const resizeObserver = new ResizeObserver(() => {
+                clearTimeout(resizeTimer);
+                resizeTimer = setTimeout(() => savePanelLayout(el), 150);
+            });
+            resizeObserver.observe(el);
+        }
+
+        // 視窗尺寸改變時確保 panel 唔會跌出畫面，並保存修正後位置。
+        window.addEventListener('resize', () => {
+            const rect = el.getBoundingClientRect();
+            const layout = clampPanelLayout({
+                left: rect.left,
+                top: rect.top,
+                width: rect.width,
+                height: rect.height
+            });
+            el.style.left = `${layout.left}px`;
+            el.style.top = `${layout.top}px`;
+            el.style.width = `${layout.width}px`;
+            el.style.height = `${layout.height}px`;
+            savePanelLayout(el);
+        });
     }
 
     function initPanels() {
@@ -202,7 +308,7 @@
             style.textContent = `
                 .tm-panel { position: fixed; z-index: 999999; background: #222; color: #fff; border: 1px solid #555; border-radius: 5px; opacity: 0.4; transition: opacity 0.3s; font-family: sans-serif; resize: both; overflow: hidden; display: flex; flex-direction: column; min-width: 200px; min-height: 140px; box-sizing: border-box; }
                 .tm-panel:hover { opacity: 1.0 !important; }
-                .tm-header { padding: 5px 10px; background: #333; cursor: move; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #555; border-radius: 5px 5px 0 0; flex-shrink: 0; }
+                .tm-header { padding: 5px 10px; background: #333; cursor: move; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #555; border-radius: 5px 5px 0 0; flex-shrink: 0; user-select: none; }
                 .tm-header-btns span { cursor: pointer; margin-left: 8px; color: #aaa; }
                 .tm-header-btns span:hover { color: #fff; }
                 .tm-content { padding: 10px; font-size: 13px; flex: 1; min-height: 0; overflow: auto; box-sizing: border-box; width: 100%; }
@@ -223,10 +329,6 @@
             const logPanel = document.createElement('div');
             logPanel.id = 'tm-log-panel';
             logPanel.className = 'tm-panel';
-            logPanel.style.top = '20px';
-            logPanel.style.right = '20px';
-            logPanel.style.width = '300px';
-            logPanel.style.height = '240px';
             logPanel.innerHTML = `
                 <div class="tm-header">
                     <span>Log Panel</span>
@@ -237,7 +339,7 @@
                 <div id="tm-log-content" class="tm-content"></div>
             `;
             document.body.appendChild(logPanel);
-            makeDraggable(logPanel);
+            setupPersistentPanel(logPanel, { top: 20, right: 20, width: 300, height: 240 });
             logPanel.querySelector('.tm-min-btn').onclick = () => {
                 document.getElementById('tm-log-content').classList.toggle('tm-hidden');
             };
@@ -247,10 +349,6 @@
             const ctrlPanel = document.createElement('div');
             ctrlPanel.id = 'tm-control-panel';
             ctrlPanel.className = 'tm-panel';
-            ctrlPanel.style.top = '280px';
-            ctrlPanel.style.right = '20px';
-            ctrlPanel.style.width = '240px';
-            ctrlPanel.style.height = '420px';
             ctrlPanel.innerHTML = `
                 <div class="tm-header">
                     <span>Control Panel</span>
@@ -288,7 +386,7 @@
                 </div>
             `;
             document.body.appendChild(ctrlPanel);
-            makeDraggable(ctrlPanel);
+            setupPersistentPanel(ctrlPanel, { top: 280, right: 20, width: 240, height: 420 });
             ctrlPanel.querySelector('.tm-min-btn').onclick = () => {
                 document.getElementById('tm-control-content').classList.toggle('tm-hidden');
             };
