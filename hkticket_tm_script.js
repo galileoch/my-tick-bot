@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         HKTicketing Auto Select & Confirm
 // @namespace    http://tampermonkey.net/
-// @version      1.8
-// @description  自動處理購票須知及立即購買、選擇 hkticketing 場次、票價、增加數量；票價選項按 activityId 保存 48 小時，Panel 支援 Pointer Events 拖動/縮放及 mobile 預設最小化
+// @version      1.9
+// @description  自動處理購票須知及立即購買、選擇 hkticketing 場次、票價、增加數量；票價選項按 activityId 保存 48 小時，Panel 支援 Pointer Events 拖動/縮放及 mobile 預設最小化，付款頁自動填入卡 BIN
 // @author       You
 // @match        *://*.hkticketing.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hkticketing.com
@@ -273,6 +273,81 @@
         if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
         const rect = element.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
+    }
+
+    function setNativeInputValue(input, value) {
+        if (!input) return;
+        const descriptor = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+        if (descriptor && descriptor.set) {
+            descriptor.set.call(input, value);
+        } else {
+            input.value = value;
+        }
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    function getConfiguredCardBin() {
+        const raw = String(CONFIG.privilegeCode || localStorage.getItem('tm_privilege_code') || '');
+        const digits = raw.replace(/\D/g, '');
+        return digits.length >= 6 ? digits.slice(0, 6) : '';
+    }
+
+    function findCashierCardBinInput() {
+        const isCashier = location.href.includes('/cashier') || (document.body && document.body.dataset && document.body.dataset.spm === 'cashier');
+        if (!isCashier) return null;
+
+        const directMatch = document.querySelector('input[placeholder*="卡BIN"], input[placeholder*="BIN"]');
+        if (directMatch && isElementVisible(directMatch) && !directMatch.disabled && !directMatch.readOnly) {
+            return directMatch;
+        }
+
+        for (const input of document.querySelectorAll('input')) {
+            const type = String(input.type || 'text').toLowerCase();
+            if (!['text', 'tel', 'number'].includes(type)) continue;
+            if (!isElementVisible(input) || input.disabled || input.readOnly) continue;
+
+            const placeholder = String(input.getAttribute('placeholder') || '');
+            const name = String(input.getAttribute('name') || '').toLowerCase();
+            const id = String(input.id || '').toLowerCase();
+            const className = typeof input.className === 'string' ? input.className.toLowerCase() : '';
+            const context = input.closest('.pay-item, .bui-card, .mz-form-item-control, form, [class*="formItem"], [class*="PayMethod"]');
+            const nearbyText = String((context && context.innerText) || (input.parentElement && input.parentElement.innerText) || '');
+
+            const looksLikeBin = /bin/i.test(placeholder) ||
+                name.includes('bin') ||
+                id.includes('bin') ||
+                className.includes('bin') ||
+                (nearbyText.includes('前6位') && (nearbyText.includes('Visa') || nearbyText.includes('卡號')));
+
+            if (looksLikeBin) return input;
+        }
+        return null;
+    }
+
+    const autoFilledCardBinInputs = new WeakSet();
+
+    function fillCashierCardBinIfNeeded() {
+        const autoCodeChk = document.getElementById('tm-auto-code-chk');
+        if (autoCodeChk && !autoCodeChk.checked) return false;
+
+        const cardBin = getConfiguredCardBin();
+        if (cardBin.length !== 6) return false;
+
+        const input = findCashierCardBinInput();
+        if (!input) return false;
+        if (String(input.value || '') === cardBin) return true;
+
+        setNativeInputValue(input, cardBin);
+        if (!autoFilledCardBinInputs.has(input)) {
+            autoFilledCardBinInputs.add(input);
+            if (document.getElementById('tm-log-panel')) {
+                tmlog(`[成功] 偵測到付款頁卡 BIN 欄位，自動填入首 6 位卡號：${cardBin}`);
+            } else {
+                console.log(`[TM] 偵測到付款頁卡 BIN 欄位，自動填入首 6 位卡號：${cardBin}`);
+            }
+        }
+        return true;
     }
 
     function isButtonEnabled(button) {
@@ -832,6 +907,7 @@
     setInterval(() => {
         syncPriorityPricesForCurrentActivity();
         handleTicketDisclaimer();
+        fillCashierCardBinIfNeeded();
 
         const busyModalBtn = document.querySelector('.baxia-dialog-close');
         if (busyModalBtn && busyModalBtn.style.display !== 'none' && isRunning) {
