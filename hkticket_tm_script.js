@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         HKTicketing Auto Select & Confirm
 // @namespace    http://tampermonkey.net/
-// @version      1.11
-// @description  自動處理購票須知及立即購買、選擇 hkticketing 場次、票價、增加數量；支援多日期輪詢、票價選項按 activityId 保存 48 小時、Panel Pointer Events 拖動/縮放、付款頁自動填入卡 BIN，並修正繁忙視窗可見性判斷
+// @version      1.12
+// @description  自動處理購票須知及立即購買、選擇 hkticketing 場次、票價、增加數量；支援多日期輪詢、票價選項按 activityId 保存 48 小時、Panel Pointer Events 拖動/縮放及位置記憶、付款頁自動填入卡 BIN，並保存點擊延遲
 // @author       You
 // @match        *://*.hkticketing.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hkticketing.com
@@ -17,6 +17,7 @@
     const LEGACY_PRIORITY_PRICE_KEY = 'tm_priority_prices';
     const TARGET_DATES_STORAGE_KEY = 'tm_target_dates';
     const LEGACY_TARGET_DATE_KEY = 'tm_target_date';
+    const REFRESH_INTERVAL_STORAGE_KEY = 'tm_refresh_interval';
     const PANEL_LAYOUT_KEY_PREFIX = 'tm_panel_layout_v1_';
     const PANEL_MARGIN = 8;
     const PANEL_MIN_WIDTH = 200;
@@ -43,6 +44,11 @@
 
         const legacyDate = localStorage.getItem(LEGACY_TARGET_DATE_KEY);
         return legacyDate && legacyDate.trim() ? [legacyDate.trim()] : [];
+    }
+
+    function loadRefreshInterval() {
+        const stored = parseInt(localStorage.getItem(REFRESH_INTERVAL_STORAGE_KEY) || '', 10);
+        return Number.isFinite(stored) && stored > 0 ? stored : 1000;
     }
 
     function findActivityIdInObject(value, depth = 0, seen = new WeakSet()) {
@@ -170,7 +176,7 @@
         priorityPrices: Array.isArray(storedPriorityPrices) ? storedPriorityPrices : [],
         targetQuantity: 2,
         privilegeCode: localStorage.getItem('tm_privilege_code') || '123456',
-        refreshInterval: 1000
+        refreshInterval: loadRefreshInterval()
     };
 
     function resolveCurrentActivityId() {
@@ -517,11 +523,29 @@
     }
 
     function savePanelLayout(el) {
-        if (!el || !el.id || el.classList.contains('tm-minimized')) return;
+        if (!el || !el.id) return;
         const rect = el.getBoundingClientRect();
         if (!rect.width || !rect.height) return;
+
+        const key = getPanelLayoutKey(el);
+        if (el.classList.contains('tm-minimized')) {
+            const stored = loadStoredJson(key, null);
+            const width = Number(el.dataset.tmNormalWidth) || Number(stored && stored.width) || rect.width;
+            const height = Number(el.dataset.tmNormalHeight) || Number(stored && stored.height) || PANEL_MIN_HEIGHT;
+            const position = clampPanelPosition(rect.left, rect.top, rect.width, rect.height);
+            localStorage.setItem(key, JSON.stringify({
+                left: position.left,
+                top: position.top,
+                width,
+                height
+            }));
+            return;
+        }
+
         const layout = clampPanelLayout({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
-        localStorage.setItem(getPanelLayoutKey(el), JSON.stringify(layout));
+        el.dataset.tmNormalWidth = String(layout.width);
+        el.dataset.tmNormalHeight = String(layout.height);
+        localStorage.setItem(key, JSON.stringify(layout));
     }
 
     function restorePanelLayout(el, defaults) {
@@ -544,6 +568,8 @@
         el.style.top = `${layout.top}px`;
         el.style.width = `${layout.width}px`;
         el.style.height = `${layout.height}px`;
+        el.dataset.tmNormalWidth = String(layout.width);
+        el.dataset.tmNormalHeight = String(layout.height);
     }
 
     function setPanelMinimized(el, minimized) {
@@ -724,6 +750,7 @@
                 const position = clampPanelPosition(rect.left, rect.top, rect.width, rect.height);
                 el.style.left = `${position.left}px`;
                 el.style.top = `${position.top}px`;
+                savePanelLayout(el);
                 return;
             }
 
@@ -783,6 +810,7 @@
             setPanelMinimized(logPanel, defaultMinimized);
             logPanel.querySelector('.tm-min-btn').onclick = () => {
                 setPanelMinimized(logPanel, !logPanel.classList.contains('tm-minimized'));
+                savePanelLayout(logPanel);
             };
         }
 
@@ -826,6 +854,7 @@
             setPanelMinimized(ctrlPanel, defaultMinimized);
             ctrlPanel.querySelector('.tm-min-btn').onclick = () => {
                 setPanelMinimized(ctrlPanel, !ctrlPanel.classList.contains('tm-minimized'));
+                savePanelLayout(ctrlPanel);
             };
 
             document.getElementById('tm-conf-qty').addEventListener('input', (e) => {
@@ -836,7 +865,11 @@
                 localStorage.setItem('tm_privilege_code', e.target.value);
             });
             document.getElementById('tm-conf-interval').addEventListener('input', (e) => {
-                CONFIG.refreshInterval = parseInt(e.target.value) || 1000;
+                const parsed = parseInt(e.target.value, 10);
+                if (Number.isFinite(parsed) && parsed > 0) {
+                    CONFIG.refreshInterval = parsed;
+                    localStorage.setItem(REFRESH_INTERVAL_STORAGE_KEY, String(parsed));
+                }
             });
 
             document.getElementById('tm-start-btn').onclick = function () {
