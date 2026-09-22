@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      1.2
-// @description  快速自動點擊 buyTicketBtn，並在第二頁自動點擊「繼續」按鈕
+// @version      1.3
+// @description  自動點擊 Cityline 購票按鈕；Presales 可預先輸入會員號並於表單出現時自動填寫及提交
 // @match        https://shows.cityline.com.hk/*
 // @match        https://shows.cityline.com/*
 // @match        https://presales.cityline.com.hk/*
@@ -29,6 +29,202 @@
 
   const CLICK_INTERVAL_MS = 50;
 
+  // ============================================
+  // Presales 會員號預先輸入 / 自動提交
+  // ============================================
+  const IS_PRESALES = /^presales\.cityline\.com(?:\.hk)?$/i.test(window.location.hostname);
+  const PRESALE_MEMBER_STORAGE_KEY = 'tm_cityline_presale_member_number';
+
+  let presaleMemberNumber = '';
+  let presaleAutoSubmitted = false;
+
+  if (IS_PRESALES) {
+    try {
+      presaleMemberNumber = sessionStorage.getItem(PRESALE_MEMBER_STORAGE_KEY) || '';
+    } catch (error) {
+      console.warn('[TM] 無法讀取 presales 會員號暫存。', error);
+    }
+
+    if (presaleMemberNumber) {
+      addPresaleMemberEditButton();
+    } else {
+      showPresaleMemberDialog();
+    }
+  }
+
+  function savePresaleMemberNumber(value) {
+    const memberNumber = String(value || '').trim();
+    if (!memberNumber) return false;
+
+    presaleMemberNumber = memberNumber;
+
+    try {
+      sessionStorage.setItem(PRESALE_MEMBER_STORAGE_KEY, memberNumber);
+    } catch (error) {
+      console.warn('[TM] 無法儲存 presales 會員號暫存。', error);
+    }
+
+    console.log('[TM] Presales 會員號已預先設定。');
+    return true;
+  }
+
+  function showPresaleMemberDialog() {
+    if (!IS_PRESALES || document.getElementById('tmPresaleMemberDialog')) return;
+
+    const overlay = document.createElement('div');
+    overlay.id = 'tmPresaleMemberDialog';
+    overlay.style.cssText =
+      'position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,.68);' +
+      'display:flex;align-items:center;justify-content:center;padding:20px;';
+
+    const box = document.createElement('div');
+    box.style.cssText =
+      'width:min(420px,92vw);background:#fff;border-radius:14px;padding:20px;' +
+      'box-shadow:0 20px 60px rgba(0,0,0,.35);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#0f172a;';
+
+    const title = document.createElement('div');
+    title.textContent = 'Cityline Presales 會員號';
+    title.style.cssText = 'font-size:18px;font-weight:700;margin-bottom:8px;';
+
+    const hint = document.createElement('div');
+    hint.textContent = '先輸入會員號。當 Cityline 會員欄位出現後，會自動填入並按「前往購票」。';
+    hint.style.cssText = 'font-size:13px;line-height:1.5;color:#475569;margin-bottom:14px;';
+
+    const input = document.createElement('input');
+    input.id = 'tmPresaleMemberInput';
+    input.type = 'text';
+    input.autocomplete = 'off';
+    input.placeholder = '例如：BZ995661422';
+    input.value = presaleMemberNumber;
+    input.style.cssText =
+      'box-sizing:border-box;width:100%;padding:11px 12px;border:1px solid #cbd5e1;border-radius:9px;' +
+      'font-size:16px;outline:none;margin-bottom:8px;';
+
+    const error = document.createElement('div');
+    error.style.cssText = 'min-height:18px;font-size:12px;color:#dc2626;margin-bottom:8px;';
+
+    const buttons = document.createElement('div');
+    buttons.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+
+    const laterBtn = document.createElement('button');
+    laterBtn.type = 'button';
+    laterBtn.textContent = '稍後';
+    laterBtn.style.cssText =
+      'padding:9px 14px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#334155;cursor:pointer;';
+
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.textContent = '儲存並等待';
+    saveBtn.style.cssText =
+      'padding:9px 14px;border:0;border-radius:8px;background:#2563eb;color:#fff;font-weight:700;cursor:pointer;';
+
+    function saveAndClose() {
+      if (!savePresaleMemberNumber(input.value)) {
+        error.textContent = '請先輸入會員號。';
+        input.focus();
+        return;
+      }
+
+      overlay.remove();
+      addPresaleMemberEditButton();
+    }
+
+    saveBtn.addEventListener('click', saveAndClose);
+    laterBtn.addEventListener('click', () => overlay.remove());
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        saveAndClose();
+      }
+    });
+
+    buttons.appendChild(laterBtn);
+    buttons.appendChild(saveBtn);
+    box.appendChild(title);
+    box.appendChild(hint);
+    box.appendChild(input);
+    box.appendChild(error);
+    box.appendChild(buttons);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 0);
+  }
+
+  function addPresaleMemberEditButton() {
+    if (!IS_PRESALES || document.getElementById('tmPresaleMemberEditBtn')) return;
+
+    const button = document.createElement('button');
+    button.id = 'tmPresaleMemberEditBtn';
+    button.type = 'button';
+    button.textContent = '會員號：已設定';
+    button.style.cssText =
+      'position:fixed;right:16px;bottom:16px;z-index:2147483646;padding:8px 12px;border:0;border-radius:999px;' +
+      'background:#0f172a;color:#fff;font-size:12px;font-weight:700;box-shadow:0 6px 18px rgba(0,0,0,.25);cursor:pointer;';
+    button.addEventListener('click', showPresaleMemberDialog);
+    document.body.appendChild(button);
+  }
+
+  function setNativeInputValue(input, value) {
+    const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    if (valueSetter) {
+      valueSetter.call(input, value);
+    } else {
+      input.value = value;
+    }
+
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function isVisible(element) {
+    if (!element) return false;
+    const rect = element.getBoundingClientRect();
+    const style = window.getComputedStyle(element);
+    return (
+      style.display !== 'none' &&
+      style.visibility !== 'hidden' &&
+      Number(style.opacity || 1) !== 0 &&
+      rect.width > 0 &&
+      rect.height > 0
+    );
+  }
+
+  function handlePresaleMembership() {
+    if (!IS_PRESALES) return 'not-presales';
+
+    const memberInput = document.querySelector('#memberNumber');
+    if (!memberInput || !isVisible(memberInput)) return 'not-ready';
+
+    if (!presaleMemberNumber) {
+      showPresaleMemberDialog();
+      return 'waiting-member-number';
+    }
+
+    if (memberInput.value !== presaleMemberNumber) {
+      setNativeInputValue(memberInput, presaleMemberNumber);
+      console.log('[TM] Presales 會員號已自動填入。');
+    }
+
+    const submitBtn = document.querySelector('#buyTicketBtn');
+    if (
+      submitBtn &&
+      isVisible(submitBtn) &&
+      !submitBtn.disabled &&
+      !presaleAutoSubmitted
+    ) {
+      presaleAutoSubmitted = true;
+      submitBtn.click();
+      console.log('[TM] Presales 會員號已填入並自動提交。');
+      return 'submitted';
+    }
+
+    return 'waiting-submit';
+  }
+
   const selectors = [
     {
       name: 'buyTicketBtn',
@@ -41,6 +237,16 @@
   ];
 
   const timer = setInterval(() => {
+    // Presales：會員欄位一出現就先填會員號，再按提交。
+    const presaleResult = handlePresaleMembership();
+    if (presaleResult === 'submitted') {
+      clearInterval(timer);
+      return;
+    }
+    if (presaleResult === 'waiting-member-number' || presaleResult === 'waiting-submit') {
+      return;
+    }
+
     // 檢查並自動輸入信用卡頭 6 位數字
     const cardInput = document.querySelector('input[data-input-type="CREDIT_CARD"][maxlength="6"]');
     if (cardInput && !cardInput.dataset.filled && CONFIG.hsbcFirst6Digits) {
