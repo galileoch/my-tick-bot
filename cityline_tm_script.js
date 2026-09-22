@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      1.5
+// @version      1.6
 // @description  自動點擊 Cityline 購票按鈕；Presales 可預先輸入資料，任何文字輸入欄位出現後自動填寫及提交
 // @match        https://shows.cityline.com.hk/*
 // @match        https://shows.cityline.com/*
@@ -28,6 +28,17 @@
   };
 
   const CLICK_INTERVAL_MS = 50;
+
+  // F5 / Reload 後不要自動點擊 #buyTicketBtn。
+  // 正常首次進入 / 由其他頁面導向時，維持原有自動點擊行為。
+  const navigationEntry = performance.getEntriesByType?.('navigation')?.[0];
+  const IS_PAGE_RELOAD = navigationEntry
+    ? navigationEntry.type === 'reload'
+    : performance.navigation?.type === 1;
+
+  if (IS_PAGE_RELOAD) {
+    console.log('[TM] 偵測到頁面刷新：本次載入不會自動點擊 #buyTicketBtn。');
+  }
 
   // ============================================
   // Presales 通用文字欄位預先輸入 / 自動提交
@@ -250,7 +261,8 @@
       submitBtn &&
       isVisible(submitBtn) &&
       !submitBtn.disabled &&
-      !presaleAutoSubmitted
+      !presaleAutoSubmitted &&
+      !IS_PAGE_RELOAD
     ) {
       presaleAutoSubmitted = true;
       submitBtn.click();
@@ -297,6 +309,10 @@
 
     // 檢查並點擊按鈕
     for (const selector of selectors) {
+      if (IS_PAGE_RELOAD && selector.name === 'buyTicketBtn') {
+        continue;
+      }
+
       const btn = document.querySelector(selector.query);
       if (!btn) continue;
 
