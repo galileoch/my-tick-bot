@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      1.4
-// @description  自動點擊 Cityline 購票按鈕；Presales 可預先輸入會員號並於表單出現時自動填寫及提交
+// @version      1.5
+// @description  自動點擊 Cityline 購票按鈕；Presales 可預先輸入資料，任何文字輸入欄位出現後自動填寫及提交
 // @match        https://shows.cityline.com.hk/*
 // @match        https://shows.cityline.com/*
 // @match        https://presales.cityline.com.hk/*
@@ -30,41 +30,46 @@
   const CLICK_INTERVAL_MS = 50;
 
   // ============================================
-  // Presales 會員號預先輸入 / 自動提交
+  // Presales 通用文字欄位預先輸入 / 自動提交
   // ============================================
   const IS_PRESALES = /^presales\.cityline\.com(?:\.hk)?$/i.test(window.location.hostname);
-  const PRESALE_MEMBER_STORAGE_KEY = 'tm_cityline_presale_member_number';
+  const PRESALE_VALUE_STORAGE_KEY = 'tm_cityline_presale_prefill_value';
+  const LEGACY_PRESALE_MEMBER_STORAGE_KEY = 'tm_cityline_presale_member_number';
 
-  let presaleMemberNumber = '';
+  let presalePrefillValue = '';
   let presaleAutoSubmitted = false;
 
   if (IS_PRESALES) {
     try {
-      presaleMemberNumber = sessionStorage.getItem(PRESALE_MEMBER_STORAGE_KEY) || '';
+      presalePrefillValue =
+        sessionStorage.getItem(PRESALE_VALUE_STORAGE_KEY) ||
+        sessionStorage.getItem(LEGACY_PRESALE_MEMBER_STORAGE_KEY) ||
+        '';
     } catch (error) {
-      console.warn('[TM] 無法讀取 presales 會員號暫存。', error);
+      console.warn('[TM] 無法讀取 presales 預填資料暫存。', error);
     }
 
-    if (presaleMemberNumber) {
+    if (presalePrefillValue) {
       addPresaleMemberEditButton();
     } else {
       showPresaleMemberDialog();
     }
   }
 
-  function savePresaleMemberNumber(value) {
-    const memberNumber = String(value || '').trim();
-    if (!memberNumber) return false;
+  function savePresalePrefillValue(value) {
+    const prefillValue = String(value || '').trim();
+    if (!prefillValue) return false;
 
-    presaleMemberNumber = memberNumber;
+    presalePrefillValue = prefillValue;
 
     try {
-      sessionStorage.setItem(PRESALE_MEMBER_STORAGE_KEY, memberNumber);
+      sessionStorage.setItem(PRESALE_VALUE_STORAGE_KEY, prefillValue);
+      sessionStorage.removeItem(LEGACY_PRESALE_MEMBER_STORAGE_KEY);
     } catch (error) {
-      console.warn('[TM] 無法儲存 presales 會員號暫存。', error);
+      console.warn('[TM] 無法儲存 presales 預填資料暫存。', error);
     }
 
-    console.log('[TM] Presales 會員號已預先設定。');
+    console.log('[TM] Presales 預填資料已設定。');
     return true;
   }
 
@@ -85,7 +90,7 @@
     header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;';
 
     const title = document.createElement('div');
-    title.textContent = 'Cityline Presales 會員號';
+    title.textContent = 'Cityline Presales 預填資料';
     title.style.cssText = 'font-size:14px;font-weight:700;';
 
     const closeBtn = document.createElement('button');
@@ -96,15 +101,15 @@
       'border:0;background:transparent;color:#64748b;font-size:20px;line-height:1;padding:0 2px;cursor:pointer;';
 
     const hint = document.createElement('div');
-    hint.textContent = '預先輸入會員號；欄位出現後會自動填寫並提交。';
+    hint.textContent = '可輸入會員號、信用卡頭 6 位等；任何文字輸入欄位出現後會自動填寫並提交。';
     hint.style.cssText = 'font-size:12px;line-height:1.45;color:#64748b;margin-bottom:10px;';
 
     const input = document.createElement('input');
     input.id = 'tmPresaleMemberInput';
     input.type = 'text';
     input.autocomplete = 'off';
-    input.placeholder = '例如：BZ995661422';
-    input.value = presaleMemberNumber;
+    input.placeholder = '會員號 / 信用卡頭 6 位 / 其他預售資料';
+    input.value = presalePrefillValue;
     input.style.cssText =
       'box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid #cbd5e1;border-radius:8px;' +
       'font-size:14px;outline:none;margin-bottom:6px;background:#fff;color:#0f172a;';
@@ -120,8 +125,8 @@
       'font-size:12px;font-weight:700;cursor:pointer;';
 
     function saveAndClose() {
-      if (!savePresaleMemberNumber(input.value)) {
-        error.textContent = '請先輸入會員號。';
+      if (!savePresalePrefillValue(input.value)) {
+        error.textContent = '請先輸入預填資料。';
         input.focus();
         return;
       }
@@ -172,7 +177,7 @@
       document.body.appendChild(button);
     }
 
-    button.textContent = presaleMemberNumber ? '會員號：已設定' : '設定會員號';
+    button.textContent = presalePrefillValue ? '預填資料：已設定' : '設定預填資料';
   }
 
   function setNativeInputValue(input, value) {
@@ -200,20 +205,44 @@
     );
   }
 
-  function handlePresaleMembership() {
-    if (!IS_PRESALES) return 'not-presales';
+  function getPresaleTextInput() {
+    // 不再依賴 #memberNumber。
+    // 只要 Presales 頁面出現可見、可編輯的文字類 input，就視為預售驗證欄位。
+    const candidates = document.querySelectorAll(
+      'input:not([type]), input[type="text"], input[type="tel"], input[type="number"]'
+    );
 
-    const memberInput = document.querySelector('#memberNumber');
-    if (!memberInput || !isVisible(memberInput)) return 'not-ready';
+    for (const input of candidates) {
+      if (
+        input.id === 'tmPresaleMemberInput' ||
+        input.closest('#tmPresaleMemberDialog') ||
+        input.disabled ||
+        input.readOnly ||
+        !isVisible(input)
+      ) {
+        continue;
+      }
 
-    if (!presaleMemberNumber) {
-      showPresaleMemberDialog();
-      return 'waiting-member-number';
+      return input;
     }
 
-    if (memberInput.value !== presaleMemberNumber) {
-      setNativeInputValue(memberInput, presaleMemberNumber);
-      console.log('[TM] Presales 會員號已自動填入。');
+    return null;
+  }
+
+  function handlePresalePrefill() {
+    if (!IS_PRESALES) return 'not-presales';
+
+    const targetInput = getPresaleTextInput();
+    if (!targetInput) return 'not-ready';
+
+    if (!presalePrefillValue) {
+      showPresaleMemberDialog();
+      return 'waiting-prefill-value';
+    }
+
+    if (targetInput.value !== presalePrefillValue) {
+      setNativeInputValue(targetInput, presalePrefillValue);
+      console.log('[TM] Presales 文字欄位已自動填入。', targetInput);
     }
 
     const submitBtn = document.querySelector('#buyTicketBtn');
@@ -225,7 +254,7 @@
     ) {
       presaleAutoSubmitted = true;
       submitBtn.click();
-      console.log('[TM] Presales 會員號已填入並自動提交。');
+      console.log('[TM] Presales 預填資料已填入並自動提交。');
       return 'submitted';
     }
 
@@ -244,17 +273,19 @@
   ];
 
   const timer = setInterval(() => {
-    // Presales：會員欄位一出現就先填會員號，再按提交。
-    const presaleResult = handlePresaleMembership();
+    // Presales：任何文字類 input 一出現就填入預設資料，再按 #buyTicketBtn。
+    const presaleResult = handlePresalePrefill();
     if (presaleResult === 'submitted') {
       clearInterval(timer);
       return;
     }
-    if (presaleResult === 'waiting-member-number' || presaleResult === 'waiting-submit') {
+
+    // Presales 必須繼續等 input 出現，避免未到鐘時提早點擊 #buyTicketBtn 後停止監察。
+    if (IS_PRESALES) {
       return;
     }
 
-    // 檢查並自動輸入信用卡頭 6 位數字
+    // 非 Presales 頁面：保留原有信用卡頭 6 位自動輸入功能
     const cardInput = document.querySelector('input[data-input-type="CREDIT_CARD"][maxlength="6"]');
     if (cardInput && !cardInput.dataset.filled && CONFIG.hsbcFirst6Digits) {
       cardInput.value = CONFIG.hsbcFirst6Digits;
