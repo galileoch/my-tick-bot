@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      1.9
+// @version      2.0
 // @description  自動點擊 Cityline 購票按鈕；Presales 可預先輸入資料，任何文字輸入欄位出現後自動填寫及提交
 // @match        https://shows.cityline.com.hk/*
 // @match        https://shows.cityline.com/*
@@ -11,21 +11,15 @@
 // @match        https://cultural.cityline.com/*
 // @match        https://venue.cityline.com.hk/*
 // @match        https://venue.cityline.com/*
-// @grant        none
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=cityline.com.hk
 // @run-at       document-end
 // ==/UserScript==
 
 (function () {
   'use strict';
-
-  // ============================================
-  // 設定區域
-  // ============================================
-  const CONFIG = {
-    // 請在此處填寫您的 HSBC Mastercard 頭 6 位數字
-    hsbcFirst6Digits: '',
-  };
 
   const CLICK_INTERVAL_MS = 50;
 
@@ -45,9 +39,10 @@
 
   function loadPresalePrefillValue() {
     try {
-      const raw = localStorage.getItem(PRESALE_VALUE_STORAGE_KEY);
-      if (raw) {
-        const saved = JSON.parse(raw);
+      // Tampermonkey script storage 可跨 presales / shows / venue / cultural 子網域共用。
+      const sharedRaw = GM_getValue(PRESALE_VALUE_STORAGE_KEY, '');
+      if (sharedRaw) {
+        const saved = JSON.parse(sharedRaw);
         if (
           saved &&
           typeof saved.value === 'string' &&
@@ -57,35 +52,52 @@
           return saved.value;
         }
 
+        GM_deleteValue(PRESALE_VALUE_STORAGE_KEY);
+      }
+
+      // 兼容 1.x：將舊 localStorage / sessionStorage 數值搬到共用儲存。
+      const localRaw = localStorage.getItem(PRESALE_VALUE_STORAGE_KEY);
+      if (localRaw) {
+        const saved = JSON.parse(localRaw);
+        if (
+          saved &&
+          typeof saved.value === 'string' &&
+          saved.value &&
+          Number(saved.expiresAt) > Date.now()
+        ) {
+          GM_setValue(PRESALE_VALUE_STORAGE_KEY, JSON.stringify(saved));
+          return saved.value;
+        }
+
         localStorage.removeItem(PRESALE_VALUE_STORAGE_KEY);
       }
 
-      // 兼容舊版本：如果同一個 tab 仲有舊 sessionStorage 數值，就搬去 24 小時儲存。
       const legacyValue =
         sessionStorage.getItem(LEGACY_PRESALE_VALUE_STORAGE_KEY) ||
         sessionStorage.getItem(LEGACY_PRESALE_MEMBER_STORAGE_KEY) ||
         '';
 
       if (legacyValue) {
-        const expiresAt = Date.now() + PRESALE_VALUE_TTL_MS;
-        localStorage.setItem(
-          PRESALE_VALUE_STORAGE_KEY,
-          JSON.stringify({ value: legacyValue, expiresAt })
-        );
+        const saved = {
+          value: legacyValue,
+          expiresAt: Date.now() + PRESALE_VALUE_TTL_MS,
+        };
+        GM_setValue(PRESALE_VALUE_STORAGE_KEY, JSON.stringify(saved));
         sessionStorage.removeItem(LEGACY_PRESALE_VALUE_STORAGE_KEY);
         sessionStorage.removeItem(LEGACY_PRESALE_MEMBER_STORAGE_KEY);
         return legacyValue;
       }
     } catch (error) {
-      console.warn('[TM] 無法讀取 presales 24 小時預填資料。', error);
+      console.warn('[TM] 無法讀取 24 小時共用預填資料。', error);
     }
 
     return '';
   }
 
-  if (IS_PRESALES) {
-    presalePrefillValue = loadPresalePrefillValue();
+  // 所有 Cityline 頁面都讀取同一個 dialog value。
+  presalePrefillValue = loadPresalePrefillValue();
 
+  if (IS_PRESALES) {
     // 每次新載入 / F5 都必須由使用者重新按「儲存並等待」。
     // 數字仍會保留並預填在對話框中。
     showPresaleMemberDialog();
@@ -98,18 +110,23 @@
     presalePrefillValue = prefillValue;
 
     try {
-      const expiresAt = Date.now() + PRESALE_VALUE_TTL_MS;
-      localStorage.setItem(
-        PRESALE_VALUE_STORAGE_KEY,
-        JSON.stringify({ value: prefillValue, expiresAt })
-      );
+      const saved = {
+        value: prefillValue,
+        expiresAt: Date.now() + PRESALE_VALUE_TTL_MS,
+      };
+
+      // 唯一正式來源：dialog 儲存嘅 value，透過 Tampermonkey 跨 Cityline 網域共用。
+      GM_setValue(PRESALE_VALUE_STORAGE_KEY, JSON.stringify(saved));
+
+      // 清理舊版 storage，避免日後讀到兩套不同數值。
+      localStorage.removeItem(PRESALE_VALUE_STORAGE_KEY);
       sessionStorage.removeItem(LEGACY_PRESALE_VALUE_STORAGE_KEY);
       sessionStorage.removeItem(LEGACY_PRESALE_MEMBER_STORAGE_KEY);
     } catch (error) {
-      console.warn('[TM] 無法儲存 presales 24 小時預填資料。', error);
+      console.warn('[TM] 無法儲存 24 小時共用預填資料。', error);
     }
 
-    console.log('[TM] Presales 預填資料已儲存 24 小時。');
+    console.log('[TM] Dialog 預填資料已儲存 24 小時並供所有 Cityline 頁面共用。');
     return true;
   }
 
@@ -154,7 +171,7 @@
     input.type = 'text';
     input.autocomplete = 'off';
     input.placeholder = '會員號 / 信用卡頭 6 位 / 其他預售資料';
-    input.value = presalePrefillValue || String(CONFIG.hsbcFirst6Digits || '').trim();
+    input.value = presalePrefillValue;
     input.style.cssText =
       'box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid #cbd5e1;border-radius:8px;' +
       'font-size:14px;outline:none;margin-bottom:6px;background:#fff;color:#0f172a;';
@@ -364,14 +381,12 @@
       return;
     }
 
-    // 非 Presales 頁面：保留原有信用卡頭 6 位自動輸入功能
+    // 非 Presales 頁面：信用卡頭 6 位亦完全使用 Presales dialog 儲存嘅 value。
     const cardInput = document.querySelector('input[data-input-type="CREDIT_CARD"][maxlength="6"]');
-    if (cardInput && !cardInput.dataset.filled && CONFIG.hsbcFirst6Digits) {
-      cardInput.value = CONFIG.hsbcFirst6Digits;
-      cardInput.dispatchEvent(new Event('input', { bubbles: true }));
-      cardInput.dispatchEvent(new Event('change', { bubbles: true }));
+    if (cardInput && !cardInput.dataset.filled && presalePrefillValue) {
+      setNativeInputValue(cardInput, presalePrefillValue);
       cardInput.dataset.filled = 'true';
-      console.log('[TM] Auto-filled credit card first 6 digits.');
+      console.log('[TM] 已使用 dialog value 自動填入信用卡欄位。');
     }
 
     // 檢查並點擊按鈕
