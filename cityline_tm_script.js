@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      2.1
+// @version      2.2
 // @description  自動點擊 Cityline 購票按鈕；Presales 可預先輸入資料，任何文字輸入欄位出現後自動填寫及提交
 // @match        https://shows.cityline.com.hk/*
 // @match        https://shows.cityline.com/*
@@ -28,8 +28,6 @@
   // ============================================
   const IS_PRESALES = /^presales\.cityline\.com(?:\.hk)?$/i.test(window.location.hostname);
   const PRESALE_VALUE_STORAGE_KEY = 'tm_cityline_presale_prefill_24h';
-  const LEGACY_PRESALE_VALUE_STORAGE_KEY = 'tm_cityline_presale_prefill_value';
-  const LEGACY_PRESALE_MEMBER_STORAGE_KEY = 'tm_cityline_presale_member_number';
   const PRESALE_VALUE_TTL_MS = 24 * 60 * 60 * 1000;
 
   let presalePrefillValue = '';
@@ -38,59 +36,15 @@
   let presaleWaitingArmed = false;
 
   function loadPresalePrefillValue() {
-    try {
-      // Tampermonkey script storage 可跨 presales / shows / venue / cultural 子網域共用。
-      const sharedRaw = GM_getValue(PRESALE_VALUE_STORAGE_KEY, '');
-      if (sharedRaw) {
-        const saved = JSON.parse(sharedRaw);
-        if (
-          saved &&
-          typeof saved.value === 'string' &&
-          saved.value &&
-          Number(saved.expiresAt) > Date.now()
-        ) {
-          return saved.value;
-        }
+    const raw = GM_getValue(PRESALE_VALUE_STORAGE_KEY, '');
+    if (!raw) return '';
 
-        GM_deleteValue(PRESALE_VALUE_STORAGE_KEY);
-      }
-
-      // 兼容 1.x：將舊 localStorage / sessionStorage 數值搬到共用儲存。
-      const localRaw = localStorage.getItem(PRESALE_VALUE_STORAGE_KEY);
-      if (localRaw) {
-        const saved = JSON.parse(localRaw);
-        if (
-          saved &&
-          typeof saved.value === 'string' &&
-          saved.value &&
-          Number(saved.expiresAt) > Date.now()
-        ) {
-          GM_setValue(PRESALE_VALUE_STORAGE_KEY, JSON.stringify(saved));
-          return saved.value;
-        }
-
-        localStorage.removeItem(PRESALE_VALUE_STORAGE_KEY);
-      }
-
-      const legacyValue =
-        sessionStorage.getItem(LEGACY_PRESALE_VALUE_STORAGE_KEY) ||
-        sessionStorage.getItem(LEGACY_PRESALE_MEMBER_STORAGE_KEY) ||
-        '';
-
-      if (legacyValue) {
-        const saved = {
-          value: legacyValue,
-          expiresAt: Date.now() + PRESALE_VALUE_TTL_MS,
-        };
-        GM_setValue(PRESALE_VALUE_STORAGE_KEY, JSON.stringify(saved));
-        sessionStorage.removeItem(LEGACY_PRESALE_VALUE_STORAGE_KEY);
-        sessionStorage.removeItem(LEGACY_PRESALE_MEMBER_STORAGE_KEY);
-        return legacyValue;
-      }
-    } catch (error) {
-      console.warn('[TM] 無法讀取 24 小時共用預填資料。', error);
+    const saved = JSON.parse(raw);
+    if (saved.value && saved.expiresAt > Date.now()) {
+      return saved.value;
     }
 
+    GM_deleteValue(PRESALE_VALUE_STORAGE_KEY);
     return '';
   }
 
@@ -109,24 +63,15 @@
 
     presalePrefillValue = prefillValue;
 
-    try {
-      const saved = {
+    GM_setValue(
+      PRESALE_VALUE_STORAGE_KEY,
+      JSON.stringify({
         value: prefillValue,
         expiresAt: Date.now() + PRESALE_VALUE_TTL_MS,
-      };
+      })
+    );
 
-      // 唯一正式來源：dialog 儲存嘅 value，透過 Tampermonkey 跨 Cityline 網域共用。
-      GM_setValue(PRESALE_VALUE_STORAGE_KEY, JSON.stringify(saved));
-
-      // 清理舊版 storage，避免日後讀到兩套不同數值。
-      localStorage.removeItem(PRESALE_VALUE_STORAGE_KEY);
-      sessionStorage.removeItem(LEGACY_PRESALE_VALUE_STORAGE_KEY);
-      sessionStorage.removeItem(LEGACY_PRESALE_MEMBER_STORAGE_KEY);
-    } catch (error) {
-      console.warn('[TM] 無法儲存 24 小時共用預填資料。', error);
-    }
-
-    console.log('[TM] Dialog 預填資料已儲存 24 小時並供所有 Cityline 頁面共用。');
+    console.log('[TM] Dialog 預填資料已儲存 24 小時。');
     return true;
   }
 
@@ -277,16 +222,13 @@
   function fillCitylineCreditCardInputFromDialog() {
     if (!presalePrefillValue) return false;
 
-    // Venue login 頁面會動態生成 #inputActivity0。
-    // 同時保留 data-input-type selector，兼容其他 Cityline 活動頁。
     const cardInput = document.querySelector(
-      '#inputActivity0[data-input-type="CREDIT_CARD"], input[data-input-type="CREDIT_CARD"][maxlength="6"]'
+      'input[data-input-type="CREDIT_CARD"][maxlength="6"]'
     );
 
     if (!cardInput || cardInput.disabled || cardInput.readOnly) return false;
 
-    // 每個實際 DOM input 只自動填一次；如果 Cityline 重新 render 新 input，
-    // 新 element 冇此標記，所以會再次自動填入。
+    // 同一個 input 只填一次。
     if (cardInput.dataset.tmDialogPrefilled === 'true') return true;
 
     setNativeInputValue(cardInput, presalePrefillValue);
@@ -311,8 +253,6 @@
   }
 
   function getPresaleTextInput() {
-    // 不再依賴 #memberNumber。
-    // 只要 Presales 頁面出現可見、可編輯的文字類 input，就視為預售驗證欄位。
     const candidates = document.querySelectorAll(
       'input:not([type]), input[type="text"], input[type="tel"], input[type="number"]'
     );
@@ -381,16 +321,7 @@
     return 'not-ready';
   }
 
-  const selectors = [
-    {
-      name: 'buyTicketBtn',
-      query: '#buyTicketBtn',
-    },
-    {
-      name: 'continuePurchaseBtn',
-      query: 'button.purchase-btn',
-    },
-  ];
+  const AUTO_CLICK_SELECTORS = ['#buyTicketBtn', 'button.purchase-btn'];
 
   const timer = setInterval(() => {
     // Presales：任何文字類 input 一出現就填入預設資料，再按 #buyTicketBtn。
@@ -405,21 +336,15 @@
       return;
     }
 
-    // 非 Presales 頁面：一見到 HSBC / CREDIT_CARD 驗證欄位就自動填 dialog value。
-    // 只負責填值，不會自動處理 Cloudflare / CAPTCHA，亦不會自動按「繼續」。
+    // 非 Presales：自動填入信用卡驗證欄位。
     fillCitylineCreditCardInputFromDialog();
 
-    // 檢查並點擊按鈕
-    for (const selector of selectors) {
-      const btn = document.querySelector(selector.query);
+    for (const selector of AUTO_CLICK_SELECTORS) {
+      const btn = document.querySelector(selector);
       if (!btn) continue;
 
-      if (selector.text && btn.textContent?.trim() !== selector.text) {
-        continue;
-      }
-
       btn.click();
-      console.log(`[TM] ${selector.name} found and clicked.`);
+      console.log('[TM] Auto clicked:', selector);
       clearInterval(timer);
       return;
     }
