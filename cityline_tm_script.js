@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      2.5
+// @version      2.6
 // @description  自動點擊 Cityline 購票按鈕；Presales 可預先輸入資料，任何文字輸入欄位出現後自動填寫及提交
 // @match        https://shows.cityline.com.hk/*
 // @match        https://shows.cityline.com/*
@@ -32,6 +32,8 @@
 
   let presalePrefillValue = '';
   let claimPassword = '';
+  let fullName = '';
+  let phoneNumber = '';
   let presaleAutoSubmitted = false;
   // 呢個狀態只存在於今次 page load；F5 / refresh 後一定重設為 false。
   let presaleWaitingArmed = false;
@@ -44,6 +46,8 @@
     if (saved.expiresAt > Date.now()) {
       presalePrefillValue = saved.value || '';
       claimPassword = saved.claimPassword || '';
+      fullName = saved.fullName || '';
+      phoneNumber = saved.phoneNumber || '';
       return;
     }
 
@@ -58,18 +62,22 @@
     showPresaleMemberDialog();
   }
 
-  function savePresaleData(value, password) {
+  function savePresaleData(value, password, name, phone) {
     const prefillValue = String(value || '').trim();
     if (!prefillValue) return false;
 
     presalePrefillValue = prefillValue;
     claimPassword = String(password || '').trim();
+    fullName = String(name || '').trim();
+    phoneNumber = String(phone || '').trim();
 
     GM_setValue(
       PRESALE_VALUE_STORAGE_KEY,
       JSON.stringify({
         value: presalePrefillValue,
         claimPassword,
+        fullName,
+        phoneNumber,
         expiresAt: Date.now() + PRESALE_VALUE_TTL_MS,
       })
     );
@@ -134,6 +142,26 @@
     claimPasswordInput.value = claimPassword;
     claimPasswordInput.style.cssText =
       'box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid #cbd5e1;border-radius:8px;' +
+      'font-size:14px;outline:none;margin-bottom:8px;background:#fff;color:#0f172a;';
+
+    const fullNameInput = document.createElement('input');
+    fullNameInput.id = 'tmFullNameInput';
+    fullNameInput.type = 'text';
+    fullNameInput.autocomplete = 'name';
+    fullNameInput.placeholder = '姓名';
+    fullNameInput.value = fullName;
+    fullNameInput.style.cssText =
+      'box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid #cbd5e1;border-radius:8px;' +
+      'font-size:14px;outline:none;margin-bottom:8px;background:#fff;color:#0f172a;';
+
+    const phoneInput = document.createElement('input');
+    phoneInput.id = 'tmPhoneInput';
+    phoneInput.type = 'tel';
+    phoneInput.autocomplete = 'tel';
+    phoneInput.placeholder = '電話號碼';
+    phoneInput.value = phoneNumber;
+    phoneInput.style.cssText =
+      'box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid #cbd5e1;border-radius:8px;' +
       'font-size:14px;outline:none;margin-bottom:6px;background:#fff;color:#0f172a;';
 
     const error = document.createElement('div');
@@ -160,7 +188,7 @@
         return;
       }
 
-      savePresaleData(input.value, password);
+      savePresaleData(input.value, password, fullNameInput.value, phoneInput.value);
 
       presaleWaitingArmed = true;
       presaleAutoSubmitted = false;
@@ -174,7 +202,7 @@
       addPresaleMemberEditButton();
     });
     saveBtn.addEventListener('click', saveAndClose);
-    [input, claimPasswordInput].forEach((field) => {
+    [input, claimPasswordInput, fullNameInput, phoneInput].forEach((field) => {
       field.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') {
           event.preventDefault();
@@ -189,6 +217,8 @@
     panel.appendChild(hint);
     panel.appendChild(input);
     panel.appendChild(claimPasswordInput);
+    panel.appendChild(fullNameInput);
+    panel.appendChild(phoneInput);
     panel.appendChild(error);
     panel.appendChild(saveBtn);
     document.body.appendChild(panel);
@@ -276,6 +306,22 @@
 
       setNativeInputValue(input, claimPassword);
       input.dataset.tmClaimPasswordFilled = 'true';
+    }
+  }
+
+
+  function fillPersonalInfoFromDialog() {
+    const fields = [
+      ['#fullname', fullName, 'tmFullNameFilled'],
+      ['#phone', phoneNumber, 'tmPhoneFilled'],
+    ];
+
+    for (const [selector, value, flag] of fields) {
+      const input = document.querySelector(selector);
+      if (!input || !value || input.dataset[flag] === 'true') continue;
+
+      setNativeInputValue(input, value);
+      input.dataset[flag] = 'true';
     }
   }
 
@@ -375,9 +421,10 @@
       return;
     }
 
-    // 非 Presales：自動填入信用卡驗證欄位及取票密碼。
+    // 非 Presales：自動填入信用卡驗證、取票密碼及個人資料。
     fillCitylineCreditCardInputFromDialog();
     fillClaimPasswordFromDialog();
+    fillPersonalInfoFromDialog();
 
     for (const selector of AUTO_CLICK_SELECTORS) {
       const btn = document.querySelector(selector);
@@ -546,6 +593,20 @@
       autocomplete="off"
       placeholder="取票密碼（6-20個數字）"
     >
+    <input
+      class="settings-input"
+      id="tmHelperFullName"
+      type="text"
+      autocomplete="name"
+      placeholder="姓名"
+    >
+    <input
+      class="settings-input"
+      id="tmHelperPhone"
+      type="tel"
+      autocomplete="tel"
+      placeholder="電話號碼"
+    >
     <div class="settings-status" id="tmSettingsStatus"></div>
     <button class="btn-save-settings" id="tmSaveSettingsBtn">儲存設定</button>
     <div class="status-container">
@@ -562,11 +623,15 @@
     const panelHeader = document.getElementById('tmPanelHeader');
     const helperPresaleInput = document.getElementById('tmHelperPresaleValue');
     const helperClaimPasswordInput = document.getElementById('tmHelperClaimPassword');
+    const helperFullNameInput = document.getElementById('tmHelperFullName');
+    const helperPhoneInput = document.getElementById('tmHelperPhone');
     const saveSettingsBtn = document.getElementById('tmSaveSettingsBtn');
     const settingsStatus = document.getElementById('tmSettingsStatus');
 
     helperPresaleInput.value = presalePrefillValue;
     helperClaimPasswordInput.value = claimPassword;
+    helperFullNameInput.value = fullName;
+    helperPhoneInput.value = phoneNumber;
 
     // 更新 UI 狀態
     function updateUI() {
@@ -637,6 +702,8 @@
     saveSettingsBtn.addEventListener('click', () => {
       const value = helperPresaleInput.value.trim();
       const password = helperClaimPasswordInput.value.trim();
+      const name = helperFullNameInput.value.trim();
+      const phone = helperPhoneInput.value.trim();
 
       if (!value) {
         settingsStatus.textContent = '請輸入 Presales 驗證值。';
@@ -650,7 +717,7 @@
         return;
       }
 
-      savePresaleData(value, password);
+      savePresaleData(value, password, name, phone);
       settingsStatus.textContent = '已儲存 24 小時';
       settingsStatus.style.color = '#16a34a';
     });
