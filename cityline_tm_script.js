@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      1.8
+// @version      1.9
 // @description  自動點擊 Cityline 購票按鈕；Presales 可預先輸入資料，任何文字輸入欄位出現後自動填寫及提交
 // @match        https://shows.cityline.com.hk/*
 // @match        https://shows.cityline.com/*
@@ -154,7 +154,7 @@
     input.type = 'text';
     input.autocomplete = 'off';
     input.placeholder = '會員號 / 信用卡頭 6 位 / 其他預售資料';
-    input.value = presalePrefillValue;
+    input.value = presalePrefillValue || String(CONFIG.hsbcFirst6Digits || '').trim();
     input.style.cssText =
       'box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid #cbd5e1;border-radius:8px;' +
       'font-size:14px;outline:none;margin-bottom:6px;background:#fff;color:#0f172a;';
