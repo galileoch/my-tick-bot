@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      1.7
+// @version      1.8
 // @description  自動點擊 Cityline 購票按鈕；Presales 可預先輸入資料，任何文字輸入欄位出現後自動填寫及提交
 // @match        https://shows.cityline.com.hk/*
 // @match        https://shows.cityline.com/*
@@ -300,32 +300,44 @@
     if (!presaleWaitingArmed) return 'not-armed';
 
     const targetInput = getPresaleTextInput();
-    if (!targetInput) return 'not-ready';
-
-    if (!presalePrefillValue) {
-      showPresaleMemberDialog();
-      return 'waiting-prefill-value';
-    }
-
-    if (targetInput.value !== presalePrefillValue) {
-      setNativeInputValue(targetInput, presalePrefillValue);
-      console.log('[TM] Presales 文字欄位已自動填入。', targetInput);
-    }
-
     const submitBtn = document.querySelector('#buyTicketBtn');
-    if (
+    const canSubmit =
       submitBtn &&
       isVisible(submitBtn) &&
       !submitBtn.disabled &&
-      !presaleAutoSubmitted
-    ) {
+      !presaleAutoSubmitted;
+
+    // 有驗證輸入框：維持原本流程，先填預存資料，再按 #buyTicketBtn。
+    if (targetInput) {
+      if (!presalePrefillValue) {
+        showPresaleMemberDialog();
+        return 'waiting-prefill-value';
+      }
+
+      if (targetInput.value !== presalePrefillValue) {
+        setNativeInputValue(targetInput, presalePrefillValue);
+        console.log('[TM] Presales 文字欄位已自動填入。', targetInput);
+      }
+
+      if (canSubmit) {
+        presaleAutoSubmitted = true;
+        submitBtn.click();
+        console.log('[TM] Presales 預填資料已填入並自動提交。');
+        return 'submitted';
+      }
+
+      return 'waiting-submit';
+    }
+
+    // 冇任何驗證輸入框，但 #buyTicketBtn 已經出現：直接自動點擊。
+    if (canSubmit) {
       presaleAutoSubmitted = true;
       submitBtn.click();
-      console.log('[TM] Presales 預填資料已填入並自動提交。');
+      console.log('[TM] Presales 無需輸入驗證資料，已直接自動點擊 #buyTicketBtn。');
       return 'submitted';
     }
 
-    return 'waiting-submit';
+    return 'not-ready';
   }
 
   const selectors = [
