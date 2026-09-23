@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      2.3
+// @version      2.4
 // @description  自動點擊 Cityline 購票按鈕；Presales 可預先輸入資料，任何文字輸入欄位出現後自動填寫及提交
 // @match        https://shows.cityline.com.hk/*
 // @match        https://shows.cityline.com/*
@@ -31,25 +31,26 @@
   const PRESALE_VALUE_TTL_MS = 24 * 60 * 60 * 1000;
 
   let presalePrefillValue = '';
+  let claimPassword = '';
   let presaleAutoSubmitted = false;
   // 呢個狀態只存在於今次 page load；F5 / refresh 後一定重設為 false。
   let presaleWaitingArmed = false;
 
-  function loadPresalePrefillValue() {
+  function loadSavedData() {
     const raw = GM_getValue(PRESALE_VALUE_STORAGE_KEY, '');
-    if (!raw) return '';
+    if (!raw) return;
 
     const saved = JSON.parse(raw);
-    if (saved.value && saved.expiresAt > Date.now()) {
-      return saved.value;
+    if (saved.expiresAt > Date.now()) {
+      presalePrefillValue = saved.value || '';
+      claimPassword = saved.claimPassword || '';
+      return;
     }
 
     GM_deleteValue(PRESALE_VALUE_STORAGE_KEY);
-    return '';
   }
 
-  // 所有 Cityline 頁面都讀取同一個 dialog value。
-  presalePrefillValue = loadPresalePrefillValue();
+  loadSavedData();
 
   if (IS_PRESALES) {
     // 每次新載入 / F5 都必須由使用者重新按「儲存並等待」。
@@ -57,21 +58,23 @@
     showPresaleMemberDialog();
   }
 
-  function savePresalePrefillValue(value) {
+  function savePresaleData(value, password) {
     const prefillValue = String(value || '').trim();
     if (!prefillValue) return false;
 
     presalePrefillValue = prefillValue;
+    claimPassword = String(password || '').trim();
 
     GM_setValue(
       PRESALE_VALUE_STORAGE_KEY,
       JSON.stringify({
-        value: prefillValue,
+        value: presalePrefillValue,
+        claimPassword,
         expiresAt: Date.now() + PRESALE_VALUE_TTL_MS,
       })
     );
 
-    console.log('[TM] Dialog 預填資料已儲存 24 小時。');
+    console.log('[TM] Dialog 資料已儲存 24 小時。');
     return true;
   }
 
@@ -119,6 +122,18 @@
     input.value = presalePrefillValue;
     input.style.cssText =
       'box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid #cbd5e1;border-radius:8px;' +
+      'font-size:14px;outline:none;margin-bottom:8px;background:#fff;color:#0f172a;';
+
+    const claimPasswordInput = document.createElement('input');
+    claimPasswordInput.id = 'tmClaimPasswordInput';
+    claimPasswordInput.type = 'text';
+    claimPasswordInput.inputMode = 'numeric';
+    claimPasswordInput.autocomplete = 'off';
+    claimPasswordInput.maxLength = 20;
+    claimPasswordInput.placeholder = '取票密碼（6-20個數字）';
+    claimPasswordInput.value = claimPassword;
+    claimPasswordInput.style.cssText =
+      'box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid #cbd5e1;border-radius:8px;' +
       'font-size:14px;outline:none;margin-bottom:6px;background:#fff;color:#0f172a;';
 
     const error = document.createElement('div');
@@ -132,11 +147,20 @@
       'font-size:12px;font-weight:700;cursor:pointer;';
 
     function saveAndClose() {
-      if (!savePresalePrefillValue(input.value)) {
+      if (!input.value.trim()) {
         error.textContent = '請先輸入預填資料。';
         input.focus();
         return;
       }
+
+      const password = claimPasswordInput.value.trim();
+      if (password && !/^\d{6,20}$/.test(password)) {
+        error.textContent = '取票密碼必須為 6-20 個數字。';
+        claimPasswordInput.focus();
+        return;
+      }
+
+      savePresaleData(input.value, password);
 
       presaleWaitingArmed = true;
       presaleAutoSubmitted = false;
@@ -150,11 +174,13 @@
       addPresaleMemberEditButton();
     });
     saveBtn.addEventListener('click', saveAndClose);
-    input.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        saveAndClose();
-      }
+    [input, claimPasswordInput].forEach((field) => {
+      field.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          saveAndClose();
+        }
+      });
     });
 
     header.appendChild(title);
@@ -162,6 +188,7 @@
     panel.appendChild(header);
     panel.appendChild(hint);
     panel.appendChild(input);
+    panel.appendChild(claimPasswordInput);
     panel.appendChild(error);
     panel.appendChild(saveBtn);
     document.body.appendChild(panel);
@@ -239,6 +266,19 @@
     return true;
   }
 
+
+  function fillClaimPasswordFromDialog() {
+    if (!claimPassword) return;
+
+    for (const selector of ['#claimPassword', '#ReTypePwd']) {
+      const input = document.querySelector(selector);
+      if (!input || input.dataset.tmClaimPasswordFilled === 'true') continue;
+
+      setNativeInputValue(input, claimPassword);
+      input.dataset.tmClaimPasswordFilled = 'true';
+    }
+  }
+
   function isVisible(element) {
     if (!element) return false;
     const rect = element.getBoundingClientRect();
@@ -259,7 +299,6 @@
 
     for (const input of candidates) {
       if (
-        input.id === 'tmPresaleMemberInput' ||
         input.closest('#tmPresaleMemberDialog') ||
         input.disabled ||
         input.readOnly ||
@@ -336,8 +375,9 @@
       return;
     }
 
-    // 非 Presales：自動填入信用卡驗證欄位。
+    // 非 Presales：自動填入信用卡驗證欄位及取票密碼。
     fillCitylineCreditCardInputFromDialog();
+    fillClaimPasswordFromDialog();
 
     for (const selector of AUTO_CLICK_SELECTORS) {
       const btn = document.querySelector(selector);
