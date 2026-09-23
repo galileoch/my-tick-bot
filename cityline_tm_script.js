@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.1
 // @description  自動點擊 Cityline 購票按鈕；Presales 可預先輸入資料，任何文字輸入欄位出現後自動填寫及提交
 // @match        https://shows.cityline.com.hk/*
 // @match        https://shows.cityline.com/*
@@ -273,6 +273,30 @@
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
+
+  function fillCitylineCreditCardInputFromDialog() {
+    if (!presalePrefillValue) return false;
+
+    // Venue login 頁面會動態生成 #inputActivity0。
+    // 同時保留 data-input-type selector，兼容其他 Cityline 活動頁。
+    const cardInput = document.querySelector(
+      '#inputActivity0[data-input-type="CREDIT_CARD"], input[data-input-type="CREDIT_CARD"][maxlength="6"]'
+    );
+
+    if (!cardInput || cardInput.disabled || cardInput.readOnly) return false;
+
+    // 每個實際 DOM input 只自動填一次；如果 Cityline 重新 render 新 input，
+    // 新 element 冇此標記，所以會再次自動填入。
+    if (cardInput.dataset.tmDialogPrefilled === 'true') return true;
+
+    setNativeInputValue(cardInput, presalePrefillValue);
+    cardInput.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+    cardInput.dataset.tmDialogPrefilled = 'true';
+
+    console.log('[TM] 已將 Presales dialog value 自動填入 Cityline 信用卡驗證欄位。', cardInput);
+    return true;
+  }
+
   function isVisible(element) {
     if (!element) return false;
     const rect = element.getBoundingClientRect();
@@ -381,13 +405,9 @@
       return;
     }
 
-    // 非 Presales 頁面：信用卡頭 6 位亦完全使用 Presales dialog 儲存嘅 value。
-    const cardInput = document.querySelector('input[data-input-type="CREDIT_CARD"][maxlength="6"]');
-    if (cardInput && !cardInput.dataset.filled && presalePrefillValue) {
-      setNativeInputValue(cardInput, presalePrefillValue);
-      cardInput.dataset.filled = 'true';
-      console.log('[TM] 已使用 dialog value 自動填入信用卡欄位。');
-    }
+    // 非 Presales 頁面：一見到 HSBC / CREDIT_CARD 驗證欄位就自動填 dialog value。
+    // 只負責填值，不會自動處理 Cloudflare / CAPTCHA，亦不會自動按「繼續」。
+    fillCitylineCreditCardInputFromDialog();
 
     // 檢查並點擊按鈕
     for (const selector of selectors) {
