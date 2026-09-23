@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      1.6
+// @version      1.7
 // @description  自動點擊 Cityline 購票按鈕；Presales 可預先輸入資料，任何文字輸入欄位出現後自動填寫及提交
 // @match        https://shows.cityline.com.hk/*
 // @match        https://shows.cityline.com/*
@@ -29,42 +29,66 @@
 
   const CLICK_INTERVAL_MS = 50;
 
-  // F5 / Reload 後不要自動點擊 #buyTicketBtn。
-  // 正常首次進入 / 由其他頁面導向時，維持原有自動點擊行為。
-  const navigationEntry = performance.getEntriesByType?.('navigation')?.[0];
-  const IS_PAGE_RELOAD = navigationEntry
-    ? navigationEntry.type === 'reload'
-    : performance.navigation?.type === 1;
-
-  if (IS_PAGE_RELOAD) {
-    console.log('[TM] 偵測到頁面刷新：本次載入不會自動點擊 #buyTicketBtn。');
-  }
-
   // ============================================
   // Presales 通用文字欄位預先輸入 / 自動提交
   // ============================================
   const IS_PRESALES = /^presales\.cityline\.com(?:\.hk)?$/i.test(window.location.hostname);
-  const PRESALE_VALUE_STORAGE_KEY = 'tm_cityline_presale_prefill_value';
+  const PRESALE_VALUE_STORAGE_KEY = 'tm_cityline_presale_prefill_24h';
+  const LEGACY_PRESALE_VALUE_STORAGE_KEY = 'tm_cityline_presale_prefill_value';
   const LEGACY_PRESALE_MEMBER_STORAGE_KEY = 'tm_cityline_presale_member_number';
+  const PRESALE_VALUE_TTL_MS = 24 * 60 * 60 * 1000;
 
   let presalePrefillValue = '';
   let presaleAutoSubmitted = false;
+  // 呢個狀態只存在於今次 page load；F5 / refresh 後一定重設為 false。
+  let presaleWaitingArmed = false;
 
-  if (IS_PRESALES) {
+  function loadPresalePrefillValue() {
     try {
-      presalePrefillValue =
-        sessionStorage.getItem(PRESALE_VALUE_STORAGE_KEY) ||
+      const raw = localStorage.getItem(PRESALE_VALUE_STORAGE_KEY);
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (
+          saved &&
+          typeof saved.value === 'string' &&
+          saved.value &&
+          Number(saved.expiresAt) > Date.now()
+        ) {
+          return saved.value;
+        }
+
+        localStorage.removeItem(PRESALE_VALUE_STORAGE_KEY);
+      }
+
+      // 兼容舊版本：如果同一個 tab 仲有舊 sessionStorage 數值，就搬去 24 小時儲存。
+      const legacyValue =
+        sessionStorage.getItem(LEGACY_PRESALE_VALUE_STORAGE_KEY) ||
         sessionStorage.getItem(LEGACY_PRESALE_MEMBER_STORAGE_KEY) ||
         '';
+
+      if (legacyValue) {
+        const expiresAt = Date.now() + PRESALE_VALUE_TTL_MS;
+        localStorage.setItem(
+          PRESALE_VALUE_STORAGE_KEY,
+          JSON.stringify({ value: legacyValue, expiresAt })
+        );
+        sessionStorage.removeItem(LEGACY_PRESALE_VALUE_STORAGE_KEY);
+        sessionStorage.removeItem(LEGACY_PRESALE_MEMBER_STORAGE_KEY);
+        return legacyValue;
+      }
     } catch (error) {
-      console.warn('[TM] 無法讀取 presales 預填資料暫存。', error);
+      console.warn('[TM] 無法讀取 presales 24 小時預填資料。', error);
     }
 
-    if (presalePrefillValue) {
-      addPresaleMemberEditButton();
-    } else {
-      showPresaleMemberDialog();
-    }
+    return '';
+  }
+
+  if (IS_PRESALES) {
+    presalePrefillValue = loadPresalePrefillValue();
+
+    // 每次新載入 / F5 都必須由使用者重新按「儲存並等待」。
+    // 數字仍會保留並預填在對話框中。
+    showPresaleMemberDialog();
   }
 
   function savePresalePrefillValue(value) {
@@ -74,18 +98,28 @@
     presalePrefillValue = prefillValue;
 
     try {
-      sessionStorage.setItem(PRESALE_VALUE_STORAGE_KEY, prefillValue);
+      const expiresAt = Date.now() + PRESALE_VALUE_TTL_MS;
+      localStorage.setItem(
+        PRESALE_VALUE_STORAGE_KEY,
+        JSON.stringify({ value: prefillValue, expiresAt })
+      );
+      sessionStorage.removeItem(LEGACY_PRESALE_VALUE_STORAGE_KEY);
       sessionStorage.removeItem(LEGACY_PRESALE_MEMBER_STORAGE_KEY);
     } catch (error) {
-      console.warn('[TM] 無法儲存 presales 預填資料暫存。', error);
+      console.warn('[TM] 無法儲存 presales 24 小時預填資料。', error);
     }
 
-    console.log('[TM] Presales 預填資料已設定。');
+    console.log('[TM] Presales 預填資料已儲存 24 小時。');
     return true;
   }
 
   function showPresaleMemberDialog() {
     if (!IS_PRESALES || document.getElementById('tmPresaleMemberDialog')) return;
+
+    // 開啟設定面板即代表暫停等待；必須重新按「儲存並等待」先再啟動。
+    presaleWaitingArmed = false;
+    presaleAutoSubmitted = false;
+    updatePresaleEditButton();
 
     // 小型非阻擋式浮動面板：不加 mask，頁面仍然可以正常操作。
     const panel = document.createElement('div');
@@ -112,7 +146,7 @@
       'border:0;background:transparent;color:#64748b;font-size:20px;line-height:1;padding:0 2px;cursor:pointer;';
 
     const hint = document.createElement('div');
-    hint.textContent = '可輸入會員號、信用卡頭 6 位等；任何文字輸入欄位出現後會自動填寫並提交。';
+    hint.textContent = '資料會保存 24 小時。每次刷新頁面後，請重新按「儲存並等待」先開始自動填寫及提交。';
     hint.style.cssText = 'font-size:12px;line-height:1.45;color:#64748b;margin-bottom:10px;';
 
     const input = document.createElement('input');
@@ -142,11 +176,14 @@
         return;
       }
 
+      presaleWaitingArmed = true;
+      presaleAutoSubmitted = false;
       panel.remove();
       addPresaleMemberEditButton();
     }
 
     closeBtn.addEventListener('click', () => {
+      presaleWaitingArmed = false;
       panel.remove();
       addPresaleMemberEditButton();
     });
@@ -188,7 +225,23 @@
       document.body.appendChild(button);
     }
 
-    button.textContent = presalePrefillValue ? '預填資料：已設定' : '設定預填資料';
+    updatePresaleEditButton();
+  }
+
+  function updatePresaleEditButton() {
+    const button = document.getElementById('tmPresaleMemberEditBtn');
+    if (!button) return;
+
+    if (presaleWaitingArmed) {
+      button.textContent = '預填資料：等待中';
+      button.style.background = '#166534';
+    } else if (presalePrefillValue) {
+      button.textContent = '預填資料：已保存（未等待）';
+      button.style.background = '#0f172a';
+    } else {
+      button.textContent = '設定預填資料';
+      button.style.background = '#0f172a';
+    }
   }
 
   function setNativeInputValue(input, value) {
@@ -243,6 +296,9 @@
   function handlePresalePrefill() {
     if (!IS_PRESALES) return 'not-presales';
 
+    // Refresh 後 presaleWaitingArmed 會重設；未重新按「儲存並等待」前唔做任何自動填入/提交。
+    if (!presaleWaitingArmed) return 'not-armed';
+
     const targetInput = getPresaleTextInput();
     if (!targetInput) return 'not-ready';
 
@@ -261,8 +317,7 @@
       submitBtn &&
       isVisible(submitBtn) &&
       !submitBtn.disabled &&
-      !presaleAutoSubmitted &&
-      !IS_PAGE_RELOAD
+      !presaleAutoSubmitted
     ) {
       presaleAutoSubmitted = true;
       submitBtn.click();
@@ -309,10 +364,6 @@
 
     // 檢查並點擊按鈕
     for (const selector of selectors) {
-      if (IS_PAGE_RELOAD && selector.name === 'buyTicketBtn') {
-        continue;
-      }
-
       const btn = document.querySelector(selector.query);
       if (!btn) continue;
 
