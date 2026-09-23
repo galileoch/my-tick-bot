@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      2.4
+// @version      2.5
 // @description  自動點擊 Cityline 購票按鈕；Presales 可預先輸入資料，任何文字輸入欄位出現後自動填寫及提交
 // @match        https://shows.cityline.com.hk/*
 // @match        https://shows.cityline.com/*
@@ -459,6 +459,37 @@
       font-weight: 600;
       color: #475569;
     }
+    .tm-control-panel .settings-input {
+      box-sizing: border-box;
+      width: 100%;
+      margin-bottom: 6px;
+      padding: 7px 8px;
+      border: 1px solid #cbd5e1;
+      border-radius: 7px;
+      font-size: 12px;
+      background: #fff;
+      color: #0f172a;
+      user-select: text;
+    }
+    .tm-control-panel .btn-save-settings {
+      width: 100%;
+      margin-bottom: 10px;
+      padding: 7px 10px;
+      border: 0;
+      border-radius: 7px;
+      background: #0f172a;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .tm-control-panel .settings-status {
+      min-height: 16px;
+      margin-top: -2px;
+      margin-bottom: 4px;
+      font-size: 11px;
+      color: #64748b;
+    }
     .tm-control-panel .btn-toggle {
       width: 100%;
       padding: 8px 12px;
@@ -499,6 +530,24 @@
     <div class="panel-header" id="tmPanelHeader">
       <span class="panel-title">Cityline 助手</span>
     </div>
+    <input
+      class="settings-input"
+      id="tmHelperPresaleValue"
+      type="text"
+      autocomplete="off"
+      placeholder="Presales 驗證值"
+    >
+    <input
+      class="settings-input"
+      id="tmHelperClaimPassword"
+      type="text"
+      inputmode="numeric"
+      maxlength="20"
+      autocomplete="off"
+      placeholder="取票密碼（6-20個數字）"
+    >
+    <div class="settings-status" id="tmSettingsStatus"></div>
+    <button class="btn-save-settings" id="tmSaveSettingsBtn">儲存設定</button>
     <div class="status-container">
       <span class="status-dot" id="tmStatusDot"></span>
       <span class="status-text" id="tmStatusText">已暫停</span>
@@ -511,6 +560,13 @@
     const statusDot = document.getElementById('tmStatusDot');
     const statusText = document.getElementById('tmStatusText');
     const panelHeader = document.getElementById('tmPanelHeader');
+    const helperPresaleInput = document.getElementById('tmHelperPresaleValue');
+    const helperClaimPasswordInput = document.getElementById('tmHelperClaimPassword');
+    const saveSettingsBtn = document.getElementById('tmSaveSettingsBtn');
+    const settingsStatus = document.getElementById('tmSettingsStatus');
+
+    helperPresaleInput.value = presalePrefillValue;
+    helperClaimPasswordInput.value = claimPassword;
 
     // 更新 UI 狀態
     function updateUI() {
@@ -577,6 +633,27 @@
       statusText.style.color = '#d97706';
       retryTimeoutId = setTimeout(triggerAutoClick, 1500);
     }
+
+    saveSettingsBtn.addEventListener('click', () => {
+      const value = helperPresaleInput.value.trim();
+      const password = helperClaimPasswordInput.value.trim();
+
+      if (!value) {
+        settingsStatus.textContent = '請輸入 Presales 驗證值。';
+        settingsStatus.style.color = '#dc2626';
+        return;
+      }
+
+      if (password && !/^\d{6,20}$/.test(password)) {
+        settingsStatus.textContent = '取票密碼必須為 6-20 個數字。';
+        settingsStatus.style.color = '#dc2626';
+        return;
+      }
+
+      savePresaleData(value, password);
+      settingsStatus.textContent = '已儲存 24 小時';
+      settingsStatus.style.color = '#16a34a';
+    });
 
     // 切換按鈕點擊事件
     toggleBtn.addEventListener('click', () => {
