@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      2.2
+// @version      2.3
 // @description  自動點擊 Cityline 購票按鈕；Presales 可預先輸入資料，任何文字輸入欄位出現後自動填寫及提交
 // @match        https://shows.cityline.com.hk/*
 // @match        https://shows.cityline.com/*
@@ -389,6 +389,7 @@
       border-bottom: 1px solid rgba(0, 0, 0, 0.08);
       padding-bottom: 6px;
       cursor: move;
+      touch-action: none;
     }
     .tm-control-panel .panel-title {
       font-size: 14px;
@@ -557,34 +558,54 @@
     makeDraggable(panel, panelHeader);
 
     function makeDraggable(element, handle) {
-      let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
-      handle.onmousedown = dragMouseDown;
+      let startX = 0;
+      let startY = 0;
+      let startLeft = 0;
+      let startTop = 0;
 
-      function dragMouseDown(e) {
-        e = e || window.event;
-        e.preventDefault();
-        pos3 = e.clientX;
-        pos4 = e.clientY;
-        document.onmouseup = closeDragElement;
-        document.onmousemove = elementDrag;
-      }
+      handle.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
 
-      function elementDrag(e) {
-        e = e || window.event;
-        e.preventDefault();
-        pos1 = pos3 - e.clientX;
-        pos2 = pos4 - e.clientY;
-        pos3 = e.clientX;
-        pos4 = e.clientY;
-        element.style.top = (element.offsetTop - pos2) + "px";
-        element.style.left = (element.offsetLeft - pos1) + "px";
+        const rect = element.getBoundingClientRect();
+        startX = event.clientX;
+        startY = event.clientY;
+        startLeft = rect.left;
+        startTop = rect.top;
+
+        element.style.left = rect.left + 'px';
+        element.style.top = rect.top + 'px';
         element.style.right = 'auto';
-      }
 
-      function closeDragElement() {
-        document.onmouseup = null;
-        document.onmousemove = null;
-      }
+        handle.setPointerCapture(event.pointerId);
+      });
+
+      handle.addEventListener('pointermove', (event) => {
+        if (!handle.hasPointerCapture(event.pointerId)) return;
+
+        const maxLeft = Math.max(0, window.innerWidth - element.offsetWidth);
+        const maxTop = Math.max(0, window.innerHeight - element.offsetHeight);
+
+        const left = Math.min(
+          maxLeft,
+          Math.max(0, startLeft + event.clientX - startX)
+        );
+        const top = Math.min(
+          maxTop,
+          Math.max(0, startTop + event.clientY - startY)
+        );
+
+        element.style.left = left + 'px';
+        element.style.top = top + 'px';
+      });
+
+      const stopDragging = (event) => {
+        if (handle.hasPointerCapture(event.pointerId)) {
+          handle.releasePointerCapture(event.pointerId);
+        }
+      };
+
+      handle.addEventListener('pointerup', stopDragging);
+      handle.addEventListener('pointercancel', stopDragging);
     }
   }
 })();
