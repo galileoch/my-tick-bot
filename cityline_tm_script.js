@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      2.6
-// @description  自動點擊 Cityline 購票按鈕；Presales 可預先輸入資料，任何文字輸入欄位出現後自動填寫及提交
+// @version      2.7
+// @description  自動點擊 Cityline 購票按鈕；Presales / Shows 可預先輸入資料，並於對應頁面自動填寫
 // @match        https://shows.cityline.com.hk/*
 // @match        https://shows.cityline.com/*
 // @match        https://presales.cityline.com.hk/*
@@ -27,6 +27,7 @@
   // Presales 通用文字欄位預先輸入 / 自動提交
   // ============================================
   const IS_PRESALES = /^presales\.cityline\.com(?:\.hk)?$/i.test(window.location.hostname);
+  const IS_PREFILL_DIALOG_HOST = /^(?:presales|shows)\.cityline\.com(?:\.hk)?$/i.test(window.location.hostname);
   const PRESALE_VALUE_STORAGE_KEY = 'tm_cityline_presale_prefill_24h';
   const PRESALE_VALUE_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -56,9 +57,9 @@
 
   loadSavedData();
 
-  if (IS_PRESALES) {
-    // 每次新載入 / F5 都必須由使用者重新按「儲存並等待」。
-    // 數字仍會保留並預填在對話框中。
+  if (IS_PREFILL_DIALOG_HOST) {
+    // Presales / Shows 都顯示同一個預填資料面板。
+    // Presales 每次新載入 / F5 都仍然要重新按「儲存並等待」先啟動自動提交。
     showPresaleMemberDialog();
   }
 
@@ -87,7 +88,7 @@
   }
 
   function showPresaleMemberDialog() {
-    if (!IS_PRESALES || document.getElementById('tmPresaleMemberDialog')) return;
+    if (!IS_PREFILL_DIALOG_HOST || document.getElementById('tmPresaleMemberDialog')) return;
 
     // 開啟設定面板即代表暫停等待；必須重新按「儲存並等待」先再啟動。
     presaleWaitingArmed = false;
@@ -230,7 +231,7 @@
   }
 
   function addPresaleMemberEditButton() {
-    if (!IS_PRESALES) return;
+    if (!IS_PREFILL_DIALOG_HOST) return;
 
     let button = document.getElementById('tmPresaleMemberEditBtn');
     if (!button) {
