@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         HKTicketing Auto Select & Confirm
 // @namespace    http://tampermonkey.net/
-// @version      1.12
-// @description  自動處理購票須知及立即購買、選擇 hkticketing 場次、票價、增加數量；支援多日期輪詢、票價選項按 activityId 保存 48 小時、Panel Pointer Events 拖動/縮放及位置記憶、付款頁自動填入卡 BIN，並保存點擊延遲
+// @version      1.13
+// @description  自動處理購票須知及立即購買、選擇 hkticketing 場次、票價、增加數量；支援多日期輪詢、票價選項按 activityId 保存 48 小時、Panel Pointer Events 拖動/縮放及位置記憶、付款頁自動填入卡 BIN、倒數提前顯示及保存點擊延遲
 // @author       You
 // @match        *://*.hkticketing.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hkticketing.com
@@ -18,6 +18,7 @@
     const TARGET_DATES_STORAGE_KEY = 'tm_target_dates';
     const LEGACY_TARGET_DATE_KEY = 'tm_target_date';
     const REFRESH_INTERVAL_STORAGE_KEY = 'tm_refresh_interval';
+    const COUNTDOWN_ADVANCE_STORAGE_KEY = 'tm_countdown_advance_ms';
     const PANEL_LAYOUT_KEY_PREFIX = 'tm_panel_layout_v1_';
     const PANEL_MARGIN = 8;
     const PANEL_MIN_WIDTH = 200;
@@ -49,6 +50,11 @@
     function loadRefreshInterval() {
         const stored = parseInt(localStorage.getItem(REFRESH_INTERVAL_STORAGE_KEY) || '', 10);
         return Number.isFinite(stored) && stored > 0 ? stored : 1000;
+    }
+
+    function loadCountdownAdvanceMs() {
+        const stored = parseInt(localStorage.getItem(COUNTDOWN_ADVANCE_STORAGE_KEY) || '', 10);
+        return Number.isFinite(stored) && stored >= 0 ? stored : 1000;
     }
 
     function findActivityIdInObject(value, depth = 0, seen = new WeakSet()) {
@@ -176,7 +182,8 @@
         priorityPrices: Array.isArray(storedPriorityPrices) ? storedPriorityPrices : [],
         targetQuantity: 2,
         privilegeCode: localStorage.getItem('tm_privilege_code') || '123456',
-        refreshInterval: loadRefreshInterval()
+        refreshInterval: loadRefreshInterval(),
+        countdownAdvanceMs: loadCountdownAdvanceMs()
     };
 
     function resolveCurrentActivityId() {
@@ -961,6 +968,153 @@
             });
         });
     }
+
+
+    let countdownElement = null;
+    let countdownAnchorRemainingMs = null;
+    let countdownAnchorPerfMs = 0;
+    let countdownLastRenderedText = '';
+
+    function parseCountdownText(text) {
+        const match = String(text || '').trim().match(/^(\d{1,3}):([0-5]\d):([0-5]\d)$/);
+        if (!match) return null;
+
+        const hours = parseInt(match[1], 10);
+        const minutes = parseInt(match[2], 10);
+        const seconds = parseInt(match[3], 10);
+        return ((hours * 60 * 60) + (minutes * 60) + seconds) * 1000;
+    }
+
+    function formatCountdownMs(ms) {
+        const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+        return [hours, minutes, seconds]
+            .map(value => String(value).padStart(2, '0'))
+            .join(':');
+    }
+
+    function findWaitingRoomCountdown() {
+        const candidates = document.querySelectorAll('div[class*="countdown___"]');
+        for (const el of candidates) {
+            if (parseCountdownText(el.textContent) !== null) return el;
+        }
+        return null;
+    }
+
+    function ensureCountdownAdvanceDialog() {
+        const countdown = findWaitingRoomCountdown();
+        if (!countdown) return null;
+
+        let panel = document.getElementById('tm-countdown-advance-panel');
+        if (panel) return panel;
+
+        panel = document.createElement('div');
+        panel.id = 'tm-countdown-advance-panel';
+        panel.style.cssText = [
+            'position:fixed',
+            'right:12px',
+            'top:12px',
+            'z-index:1000000',
+            'width:min(220px,calc(100vw - 24px))',
+            'box-sizing:border-box',
+            'padding:10px',
+            'background:rgba(25,25,25,.92)',
+            'color:#fff',
+            'border:1px solid #666',
+            'border-radius:8px',
+            'font-family:sans-serif',
+            'font-size:13px',
+            'box-shadow:0 2px 10px rgba(0,0,0,.3)'
+        ].join(';');
+
+        panel.innerHTML = `
+            <label for="tm-countdown-advance-input" style="display:block;margin-bottom:5px;color:#ddd;">
+                倒數提前 (ms)
+            </label>
+            <input
+                id="tm-countdown-advance-input"
+                type="number"
+                min="0"
+                step="100"
+                inputmode="numeric"
+                value="${CONFIG.countdownAdvanceMs}"
+                style="width:100%;box-sizing:border-box;padding:7px 8px;background:#333;color:#fff;border:1px solid #666;border-radius:5px;font-size:16px;"
+            >
+            <div id="tm-countdown-advance-status" style="margin-top:6px;color:#aaa;font-size:11px;line-height:1.35;">
+                畫面倒數會提前 ${CONFIG.countdownAdvanceMs} ms；不修改手機時間。
+            </div>
+        `;
+
+        document.body.appendChild(panel);
+
+        const input = panel.querySelector('#tm-countdown-advance-input');
+        const status = panel.querySelector('#tm-countdown-advance-status');
+        input.addEventListener('input', () => {
+            const parsed = parseInt(input.value, 10);
+            if (!Number.isFinite(parsed) || parsed < 0) {
+                status.textContent = '請輸入 0 或以上的毫秒數。';
+                return;
+            }
+
+            CONFIG.countdownAdvanceMs = parsed;
+            localStorage.setItem(COUNTDOWN_ADVANCE_STORAGE_KEY, String(parsed));
+            status.textContent = `畫面倒數會提前 ${parsed} ms；不修改手機時間。`;
+        });
+
+        return panel;
+    }
+
+    function updateAdvancedCountdown() {
+        const el = findWaitingRoomCountdown();
+
+        if (!el) {
+            countdownElement = null;
+            countdownAnchorRemainingMs = null;
+            countdownLastRenderedText = '';
+            const panel = document.getElementById('tm-countdown-advance-panel');
+            if (panel) panel.remove();
+            return;
+        }
+
+        ensureCountdownAdvanceDialog();
+
+        const currentText = String(el.textContent || '').trim();
+        const currentMs = parseCountdownText(currentText);
+
+        if (el !== countdownElement) {
+            countdownElement = el;
+            countdownAnchorRemainingMs = currentMs;
+            countdownAnchorPerfMs = performance.now();
+            countdownLastRenderedText = '';
+        } else if (
+            currentMs !== null &&
+            currentText !== countdownLastRenderedText
+        ) {
+            const elapsedMs = performance.now() - countdownAnchorPerfMs;
+            const expectedSiteMs = Math.max(0, countdownAnchorRemainingMs - elapsedMs);
+
+            if (Math.abs(currentMs - expectedSiteMs) > 1500) {
+                countdownAnchorRemainingMs = currentMs;
+                countdownAnchorPerfMs = performance.now();
+            }
+        }
+
+        if (countdownAnchorRemainingMs === null) return;
+
+        const elapsedMs = performance.now() - countdownAnchorPerfMs;
+        const siteRemainingMs = Math.max(0, countdownAnchorRemainingMs - elapsedMs);
+        const adjustedRemainingMs = Math.max(0, siteRemainingMs - CONFIG.countdownAdvanceMs);
+        const adjustedText = formatCountdownMs(adjustedRemainingMs);
+
+        if (currentText !== adjustedText) {
+            el.textContent = adjustedText;
+        }
+        countdownLastRenderedText = adjustedText;
+    }
+
+    setInterval(updateAdvancedCountdown, 100);
 
     setInterval(() => {
         syncPriorityPricesForCurrentActivity();
