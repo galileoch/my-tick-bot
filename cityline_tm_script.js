@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      2.10
+// @version      2.11
 // @description  自動點擊 Cityline 購票按鈕；Presales / Shows 可預先輸入資料，並於對應頁面自動填寫
 // @match        https://shows.cityline.com.hk/*
 // @match        https://shows.cityline.com/*
@@ -589,6 +589,40 @@
   }
 
   const AUTO_CLICK_SELECTORS = ['#buyTicketBtn', 'button.purchase-btn'];
+
+  // ============================================
+  // 購票者須知：自動勾選條款並按「繼續」
+  // ============================================
+  function handlePurchaseNoticeModal() {
+    const modal = document.querySelector('#surveyFormModalMask.show');
+    if (!modal || !isVisible(modal)) return false;
+
+    const checkbox = modal.querySelector('#tncCheckBox');
+    const continueBtn = modal.querySelector('.surveyForm-modal-content .load-button');
+
+    if (!checkbox || !continueBtn || !isVisible(continueBtn) || continueBtn.disabled) {
+      return false;
+    }
+
+    if (!checkbox.checked) {
+      checkbox.click();
+      checkbox.dispatchEvent(new Event('input', { bubbles: true }));
+      checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+      console.log('[TM] 已自動勾選購票者須知。');
+    }
+
+    if (!checkbox.checked) return false;
+    if (continueBtn.dataset.tmTncAutoClicked === 'true') return true;
+
+    continueBtn.dataset.tmTncAutoClicked = 'true';
+    console.log('[TM] 已自動按購票者須知「繼續」。');
+    continueBtn.click();
+    return true;
+  }
+
+  const purchaseNoticeTimer = setInterval(() => {
+    handlePurchaseNoticeModal();
+  }, CLICK_INTERVAL_MS);
 
   const timer = setInterval(() => {
     // Presales：任何文字類 input 一出現就填入預設資料，再按 #buyTicketBtn。
