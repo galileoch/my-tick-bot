@@ -131,7 +131,7 @@
         '[TM] 已啟用 Cityline serverTime +' + serverTimeOffsetMs + 'ms offset。'
       );
 
-      // 立即重新同步一次，令目前頁面內的 serverTime 亦套用 +500ms。
+      // 立即重新同步一次，令目前頁面內的 serverTime 亦套用最新提早設定。
       if (typeof pageWindow.getServerTime === 'function') {
         Promise.resolve(pageWindow.getServerTime()).catch((error) => {
           console.warn('[TM] 重新同步 Cityline serverTime 失敗。', error);
@@ -293,6 +293,11 @@
       'box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid #cbd5e1;border-radius:8px;' +
       'font-size:14px;outline:none;margin-bottom:8px;background:#fff;color:#0f172a;';
 
+    const serverTimeOffsetLabel = document.createElement('div');
+    serverTimeOffsetLabel.textContent = '提早進入（ms）';
+    serverTimeOffsetLabel.style.cssText =
+      'font-size:11px;font-weight:600;color:#475569;margin:0 0 4px 2px;';
+
     const serverTimeOffsetInput = document.createElement('input');
     serverTimeOffsetInput.id = 'tmServerTimeOffsetInput';
     serverTimeOffsetInput.type = 'number';
@@ -382,6 +387,7 @@
     panel.appendChild(claimPasswordInput);
     panel.appendChild(fullNameInput);
     panel.appendChild(phoneInput);
+    panel.appendChild(serverTimeOffsetLabel);
     panel.appendChild(serverTimeOffsetInput);
     panel.appendChild(error);
     panel.appendChild(saveBtn);
@@ -771,6 +777,7 @@
       autocomplete="tel"
       placeholder="電話號碼"
     >
+    <div style="font-size:11px;font-weight:600;color:#475569;margin:0 0 4px 2px;">提早進入（ms）</div>
     <input
       class="settings-input"
       id="tmHelperServerTimeOffset"
@@ -808,6 +815,20 @@
     helperFullNameInput.value = fullName;
     helperPhoneInput.value = phoneNumber;
     helperServerTimeOffsetInput.value = String(serverTimeOffsetMs);
+
+    helperServerTimeOffsetInput.addEventListener('change', () => {
+      const offsetValue = Number(helperServerTimeOffsetInput.value);
+      if (!Number.isFinite(offsetValue) || offsetValue < 0 || offsetValue > 5000) {
+        settingsStatus.textContent = '提早毫秒請輸入 0-5000。';
+        settingsStatus.style.color = '#dc2626';
+        return;
+      }
+
+      const savedOffset = saveServerTimeOffset(offsetValue);
+      helperServerTimeOffsetInput.value = String(savedOffset);
+      settingsStatus.textContent = '提早時間已更新為 ' + savedOffset + 'ms';
+      settingsStatus.style.color = '#16a34a';
+    });
 
     // 更新 UI 狀態
     function updateUI() {
