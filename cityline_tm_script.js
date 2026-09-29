@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      2.8
+// @version      2.9
 // @description  自動點擊 Cityline 購票按鈕；Presales / Shows 可預先輸入資料，並於對應頁面自動填寫
 // @match        https://shows.cityline.com.hk/*
 // @match        https://shows.cityline.com/*
@@ -23,14 +23,38 @@
   'use strict';
 
   const CLICK_INTERVAL_MS = 50;
-  const CITYLINE_SERVER_TIME_OFFSET_MS = 500;
+  const SERVER_TIME_OFFSET_STORAGE_KEY = 'tm_cityline_server_time_offset_ms';
+  const DEFAULT_SERVER_TIME_OFFSET_MS = 500;
+  let serverTimeOffsetMs = normalizeServerTimeOffset(
+    GM_getValue(SERVER_TIME_OFFSET_STORAGE_KEY, DEFAULT_SERVER_TIME_OFFSET_MS)
+  );
 
-  // 將 Cityline /api/server_time 每次回傳值調快固定毫秒數。
+  function normalizeServerTimeOffset(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return DEFAULT_SERVER_TIME_OFFSET_MS;
+    return Math.max(0, Math.min(5000, Math.round(parsed)));
+  }
+
+  function saveServerTimeOffset(value) {
+    serverTimeOffsetMs = normalizeServerTimeOffset(value);
+    GM_setValue(SERVER_TIME_OFFSET_STORAGE_KEY, serverTimeOffsetMs);
+
+    const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+    if (typeof pageWindow.getServerTime === 'function') {
+      Promise.resolve(pageWindow.getServerTime()).catch((error) => {
+        console.warn('[TM] 更新提早毫秒後重新同步 serverTime 失敗。', error);
+      });
+    }
+
+    console.log('[TM] Cityline 提早時間已設定為 ' + serverTimeOffsetMs + 'ms。');
+    return serverTimeOffsetMs;
+  }
+
+  // 將 Cityline /api/server_time 每次回傳值按用戶設定調快。
   // 只改前端判斷時間；Cityline server 端仍然會以真正 server time 驗證請求。
   installCitylineServerTimeOffset();
 
   function installCitylineServerTimeOffset() {
-    if (CITYLINE_SERVER_TIME_OFFSET_MS <= 0) return;
 
     const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
     const patchFlag = '__tmCitylineServerTimeOffsetPatched';
@@ -57,13 +81,13 @@
         return filteredData;
       }
 
-      const adjustedTimestamp = serverTimestamp + CITYLINE_SERVER_TIME_OFFSET_MS;
+      const adjustedTimestamp = serverTimestamp + serverTimeOffsetMs;
       console.log(
         '[TM] Cityline serverTime:',
         serverTimestamp,
         '=>',
         adjustedTimestamp,
-        '(+' + CITYLINE_SERVER_TIME_OFFSET_MS + 'ms)'
+        '(+' + serverTimeOffsetMs + 'ms)'
       );
       return String(adjustedTimestamp);
     }
@@ -104,7 +128,7 @@
       Object.defineProperty(patchedAjax, patchFlag, { value: true });
       pageJQuery.ajax = patchedAjax;
       console.log(
-        '[TM] 已啟用 Cityline serverTime +' + CITYLINE_SERVER_TIME_OFFSET_MS + 'ms offset。'
+        '[TM] 已啟用 Cityline serverTime +' + serverTimeOffsetMs + 'ms offset。'
       );
 
       // 立即重新同步一次，令目前頁面內的 serverTime 亦套用 +500ms。
@@ -267,6 +291,19 @@
     phoneInput.value = phoneNumber;
     phoneInput.style.cssText =
       'box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid #cbd5e1;border-radius:8px;' +
+      'font-size:14px;outline:none;margin-bottom:8px;background:#fff;color:#0f172a;';
+
+    const serverTimeOffsetInput = document.createElement('input');
+    serverTimeOffsetInput.id = 'tmServerTimeOffsetInput';
+    serverTimeOffsetInput.type = 'number';
+    serverTimeOffsetInput.inputMode = 'numeric';
+    serverTimeOffsetInput.min = '0';
+    serverTimeOffsetInput.max = '5000';
+    serverTimeOffsetInput.step = '50';
+    serverTimeOffsetInput.placeholder = '提早毫秒，例如 500';
+    serverTimeOffsetInput.value = String(serverTimeOffsetMs);
+    serverTimeOffsetInput.style.cssText =
+      'box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid #cbd5e1;border-radius:8px;' +
       'font-size:14px;outline:none;margin-bottom:6px;background:#fff;color:#0f172a;';
 
     const error = document.createElement('div');
@@ -287,12 +324,20 @@
       }
 
       const password = claimPasswordInput.value.trim();
+      const offsetValue = Number(serverTimeOffsetInput.value);
+      if (!Number.isFinite(offsetValue) || offsetValue < 0 || offsetValue > 5000) {
+        error.textContent = '提早毫秒請輸入 0-5000。';
+        serverTimeOffsetInput.focus();
+        return;
+      }
+
       if (password && !/^\d{6,20}$/.test(password)) {
         error.textContent = '取票密碼必須為 6-20 個數字。';
         claimPasswordInput.focus();
         return;
       }
 
+      saveServerTimeOffset(offsetValue);
       savePresaleData(input.value, password, fullNameInput.value, phoneInput.value);
 
       presaleWaitingArmed = true;
@@ -307,7 +352,20 @@
       addPresaleMemberEditButton();
     });
     saveBtn.addEventListener('click', saveAndClose);
-    [input, claimPasswordInput, fullNameInput, phoneInput].forEach((field) => {
+    serverTimeOffsetInput.addEventListener('change', () => {
+      const offsetValue = Number(serverTimeOffsetInput.value);
+      if (!Number.isFinite(offsetValue) || offsetValue < 0 || offsetValue > 5000) {
+        error.textContent = '提早毫秒請輸入 0-5000。';
+        return;
+      }
+
+      const savedOffset = saveServerTimeOffset(offsetValue);
+      serverTimeOffsetInput.value = String(savedOffset);
+      error.textContent = '提早時間已更新為 ' + savedOffset + 'ms。';
+      error.style.color = '#16a34a';
+    });
+
+    [input, claimPasswordInput, fullNameInput, phoneInput, serverTimeOffsetInput].forEach((field) => {
       field.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') {
           event.preventDefault();
@@ -324,6 +382,7 @@
     panel.appendChild(claimPasswordInput);
     panel.appendChild(fullNameInput);
     panel.appendChild(phoneInput);
+    panel.appendChild(serverTimeOffsetInput);
     panel.appendChild(error);
     panel.appendChild(saveBtn);
     document.body.appendChild(panel);
@@ -712,6 +771,16 @@
       autocomplete="tel"
       placeholder="電話號碼"
     >
+    <input
+      class="settings-input"
+      id="tmHelperServerTimeOffset"
+      type="number"
+      inputmode="numeric"
+      min="0"
+      max="5000"
+      step="50"
+      placeholder="提早毫秒，例如 500"
+    >
     <div class="settings-status" id="tmSettingsStatus"></div>
     <button class="btn-save-settings" id="tmSaveSettingsBtn">儲存設定</button>
     <div class="status-container">
@@ -730,6 +799,7 @@
     const helperClaimPasswordInput = document.getElementById('tmHelperClaimPassword');
     const helperFullNameInput = document.getElementById('tmHelperFullName');
     const helperPhoneInput = document.getElementById('tmHelperPhone');
+    const helperServerTimeOffsetInput = document.getElementById('tmHelperServerTimeOffset');
     const saveSettingsBtn = document.getElementById('tmSaveSettingsBtn');
     const settingsStatus = document.getElementById('tmSettingsStatus');
 
@@ -737,6 +807,7 @@
     helperClaimPasswordInput.value = claimPassword;
     helperFullNameInput.value = fullName;
     helperPhoneInput.value = phoneNumber;
+    helperServerTimeOffsetInput.value = String(serverTimeOffsetMs);
 
     // 更新 UI 狀態
     function updateUI() {
@@ -809,6 +880,13 @@
       const password = helperClaimPasswordInput.value.trim();
       const name = helperFullNameInput.value.trim();
       const phone = helperPhoneInput.value.trim();
+      const offsetValue = Number(helperServerTimeOffsetInput.value);
+
+      if (!Number.isFinite(offsetValue) || offsetValue < 0 || offsetValue > 5000) {
+        settingsStatus.textContent = '提早毫秒請輸入 0-5000。';
+        settingsStatus.style.color = '#dc2626';
+        return;
+      }
 
       if (!value) {
         settingsStatus.textContent = '請輸入 Presales 驗證值。';
@@ -822,8 +900,10 @@
         return;
       }
 
+      const savedOffset = saveServerTimeOffset(offsetValue);
+      helperServerTimeOffsetInput.value = String(savedOffset);
       savePresaleData(value, password, name, phone);
-      settingsStatus.textContent = '已儲存 24 小時';
+      settingsStatus.textContent = '已儲存 24 小時；提早 ' + savedOffset + 'ms';
       settingsStatus.style.color = '#16a34a';
     });
 
