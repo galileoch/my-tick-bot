@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      2.7
+// @version      2.8
 // @description  自動點擊 Cityline 購票按鈕；Presales / Shows 可預先輸入資料，並於對應頁面自動填寫
 // @match        https://shows.cityline.com.hk/*
 // @match        https://shows.cityline.com/*
@@ -14,6 +14,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
+// @grant        unsafeWindow
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=cityline.com.hk
 // @run-at       document-end
 // ==/UserScript==
@@ -22,6 +23,103 @@
   'use strict';
 
   const CLICK_INTERVAL_MS = 50;
+  const CITYLINE_SERVER_TIME_OFFSET_MS = 500;
+
+  // 將 Cityline /api/server_time 每次回傳值調快固定毫秒數。
+  // 只改前端判斷時間；Cityline server 端仍然會以真正 server time 驗證請求。
+  installCitylineServerTimeOffset();
+
+  function installCitylineServerTimeOffset() {
+    if (CITYLINE_SERVER_TIME_OFFSET_MS <= 0) return;
+
+    const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+    const patchFlag = '__tmCitylineServerTimeOffsetPatched';
+
+    function isServerTimeUrl(url) {
+      return typeof url === 'string' && /\\/api\\/server_time(?:\\?|$)/.test(url);
+    }
+
+    function addOffsetToResponse(data, dataType, originalDataFilter, context) {
+      const filteredData =
+        typeof originalDataFilter === 'function'
+          ? originalDataFilter.call(context, data, dataType)
+          : data;
+      const serverTimestamp = Number(filteredData);
+
+      if (!Number.isFinite(serverTimestamp)) {
+        console.warn('[TM] /api/server_time 回傳值不是有效 timestamp，保持原值。', filteredData);
+        return filteredData;
+      }
+
+      const adjustedTimestamp = serverTimestamp + CITYLINE_SERVER_TIME_OFFSET_MS;
+      console.log(
+        '[TM] Cityline serverTime:',
+        serverTimestamp,
+        '=>',
+        adjustedTimestamp,
+        '(+' + CITYLINE_SERVER_TIME_OFFSET_MS + 'ms)'
+      );
+      return String(adjustedTimestamp);
+    }
+
+    function patchAjax() {
+      const pageJQuery = pageWindow.jQuery || pageWindow.$;
+      if (!pageJQuery || typeof pageJQuery.ajax !== 'function') return false;
+      if (pageJQuery.ajax[patchFlag]) return true;
+
+      const originalAjax = pageJQuery.ajax;
+
+      function patchedAjax(urlOrOptions, maybeOptions) {
+        if (typeof urlOrOptions === 'string') {
+          if (!isServerTimeUrl(urlOrOptions)) {
+            return originalAjax.apply(this, arguments);
+          }
+
+          const options = { ...(maybeOptions || {}) };
+          const originalDataFilter = options.dataFilter;
+          options.dataFilter = function (data, dataType) {
+            return addOffsetToResponse(data, dataType, originalDataFilter, this);
+          };
+          return originalAjax.call(this, urlOrOptions, options);
+        }
+
+        if (!urlOrOptions || !isServerTimeUrl(urlOrOptions.url)) {
+          return originalAjax.apply(this, arguments);
+        }
+
+        const options = { ...urlOrOptions };
+        const originalDataFilter = options.dataFilter;
+        options.dataFilter = function (data, dataType) {
+          return addOffsetToResponse(data, dataType, originalDataFilter, this);
+        };
+        return originalAjax.call(this, options);
+      }
+
+      Object.defineProperty(patchedAjax, patchFlag, { value: true });
+      pageJQuery.ajax = patchedAjax;
+      console.log(
+        '[TM] 已啟用 Cityline serverTime +' + CITYLINE_SERVER_TIME_OFFSET_MS + 'ms offset。'
+      );
+
+      // 立即重新同步一次，令目前頁面內的 serverTime 亦套用 +500ms。
+      if (typeof pageWindow.getServerTime === 'function') {
+        Promise.resolve(pageWindow.getServerTime()).catch((error) => {
+          console.warn('[TM] 重新同步 Cityline serverTime 失敗。', error);
+        });
+      }
+
+      return true;
+    }
+
+    if (patchAjax()) return;
+
+    // 正常 document-end 時 jQuery 已存在；保留短暫 retry 以防頁面載入次序不同。
+    const patchTimer = setInterval(() => {
+      if (patchAjax()) clearInterval(patchTimer);
+    }, 10);
+
+    setTimeout(() => clearInterval(patchTimer), 10000);
+  }
 
   // ============================================
   // Presales 通用文字欄位預先輸入 / 自動提交
