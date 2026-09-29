@@ -36,7 +36,13 @@
     const patchFlag = '__tmCitylineServerTimeOffsetPatched';
 
     function isServerTimeUrl(url) {
-      return typeof url === 'string' && /\\/api\\/server_time(?:\\?|$)/.test(url);
+      if (typeof url !== 'string') return false;
+
+      try {
+        return new URL(url, pageWindow.location.href).pathname === '/api/server_time';
+      } catch (_) {
+        return false;
+      }
     }
 
     function addOffsetToResponse(data, dataType, originalDataFilter, context) {
