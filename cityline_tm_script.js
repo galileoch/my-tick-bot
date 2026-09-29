@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cityline Auto Click Buy & Continue
 // @namespace    http://tampermonkey.net/
-// @version      2.9
+// @version      2.10
 // @description  自動點擊 Cityline 購票按鈕；Presales / Shows 可預先輸入資料，並於對應頁面自動填寫
 // @match        https://shows.cityline.com.hk/*
 // @match        https://shows.cityline.com/*
@@ -82,12 +82,24 @@
       }
 
       const adjustedTimestamp = serverTimestamp + serverTimeOffsetMs;
+      const adjustedHongKongTime = new Date(adjustedTimestamp).toLocaleString('zh-HK', {
+        timeZone: 'Asia/Hong_Kong',
+        hour12: false,
+        fractionalSecondDigits: 3,
+      });
+
       console.log(
         '[TM] Cityline serverTime:',
         serverTimestamp,
         '=>',
         adjustedTimestamp,
         '(+' + serverTimeOffsetMs + 'ms)'
+      );
+      console.log(
+        '[TM] 調整後 serverTime:',
+        adjustedTimestamp,
+        '| 香港時間:',
+        adjustedHongKongTime
       );
       return String(adjustedTimestamp);
     }
